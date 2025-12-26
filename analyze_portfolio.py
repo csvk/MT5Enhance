@@ -38,6 +38,9 @@ def main():
         all_deals.append(df)
     
     df_deals = pd.concat(all_deals).sort_values('Time')
+    
+    # Calculate DealPnL on the fly (Profit + Commission + Swap)
+    df_deals['DealPnL'] = df_deals['Profit'] + df_deals['Commission'] + df_deals['Swap']
 
     # 3. Determine Date Range
     data_start = df_deals['Time'].min().normalize()

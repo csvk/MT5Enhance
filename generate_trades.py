@@ -99,12 +99,13 @@ def parse_sequences_and_deals(file_path):
                     else:
                         long_trade_count += 1
                     long_vol += vol
+                    row_dict['TradeNumberInSequence'] = long_trade_count
                 else: # out
-                    long_trade_count += 1
                     long_vol -= vol
+                    # No increment, and set to blank for 'out'
+                    row_dict['TradeNumberInSequence'] = None
                 
                 row_dict['SequenceNumber'] = long_seq_num
-                row_dict['TradeNumberInSequence'] = long_trade_count
                 active_long_deals.append(row_dict)
                 
                 if long_vol < 0.000001:
@@ -131,12 +132,13 @@ def parse_sequences_and_deals(file_path):
                     else:
                         short_trade_count += 1
                     short_vol += vol
+                    row_dict['TradeNumberInSequence'] = short_trade_count
                 else: # out
-                    short_trade_count += 1
                     short_vol -= vol
+                    # No increment, and set to blank for 'out'
+                    row_dict['TradeNumberInSequence'] = None
                 
                 row_dict['SequenceNumber'] = short_seq_num
-                row_dict['TradeNumberInSequence'] = short_trade_count
                 active_short_deals.append(row_dict)
                 
                 if short_vol < 0.000001:
@@ -152,18 +154,16 @@ def parse_sequences_and_deals(file_path):
                     short_vol = 0.0
                     short_seq_num = None
 
-            # --- In/Out Logic (Simple heuristic) ---
+            # --- In/Out Logic (Reversal/Exit part) ---
             elif direction == 'in/out':
-                # Simplified: treat in/out as a deal that belongs to whichever side is open
+                # Treat in/out as an exit for counting purposes (TradeNumberInSequence blank)
                 if long_vol > 0.000001:
-                    long_trade_count += 1
                     row_dict['SequenceNumber'] = long_seq_num
-                    row_dict['TradeNumberInSequence'] = long_trade_count
+                    row_dict['TradeNumberInSequence'] = None
                     active_long_deals.append(row_dict)
                 elif short_vol > 0.000001:
-                    short_trade_count += 1
                     row_dict['SequenceNumber'] = short_seq_num
-                    row_dict['TradeNumberInSequence'] = short_trade_count
+                    row_dict['TradeNumberInSequence'] = None
                     active_short_deals.append(row_dict)
 
             all_deals_output.append(row_dict)

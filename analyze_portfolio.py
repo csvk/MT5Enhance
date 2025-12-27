@@ -1,11 +1,13 @@
 import pandas as pd
 import os
+import shutil
 import glob
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import argparse
 from datetime import datetime
 import numpy as np
+import math
 
 def main():
     parser = argparse.ArgumentParser(description='Comprehensive Portfolio Analysis')
@@ -17,13 +19,23 @@ def main():
 
     output_dir = os.path.abspath(args.output_folder)
 
-    # 1. Locate Trades folder
+    # 1. Locate Trades folder and create Charts folder
     trades_folder = os.path.join(output_dir, "Trades")
+    charts_folder = os.path.join(output_dir, "charts")
+    
+    if os.path.exists(charts_folder):
+        print(f"Refreshing charts folder: {charts_folder}")
+        shutil.rmtree(charts_folder)
+        
+    os.makedirs(charts_folder, exist_ok=True)
+    
     if not os.path.exists(trades_folder):
         print(f"Error: Trades folder not found in {output_dir}")
         return
     
+    os.makedirs(charts_folder, exist_ok=True)
     print(f"Using trades folder: {trades_folder}")
+    print(f"Saving charts to: {charts_folder}")
 
     # 2. Load all deals
     csv_files = glob.glob(os.path.join(trades_folder, "selected_trades_*.csv"))
@@ -91,40 +103,38 @@ def main():
         for m in months:
             ax.axvline(m, color='gray', linestyle='--', alpha=0.5, linewidth=0.8)
 
-    # Chart 1: Portfolio (Balance)
-    fig1, ax1 = plt.subplots(figsize=(15, 8))
+    # 7. Portfolio Overview Chart (1x2: Balance and Drawdown)
+    fig_overview, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    
+    # Plot 1: Portfolio Balance
     ax1.plot(portfolio.index, portfolio['Balance'], label='Balance', color='blue', linewidth=1.5)
-    ax1.set_title('Portfolio Performance (Balance)')
+    ax1.set_title('Portfolio Performance (Balance)', fontsize=14)
     ax1.set_ylabel('Amount')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     add_monthly_grids(ax1, calc_start, calc_end)
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
-    plt.tight_layout()
-    chart1_path = os.path.join(output_dir, "Portfolio_Chart.png")
-    plt.savefig(chart1_path)
-    plt.close()
+    plt.setp(ax1.get_xticklabels(), rotation=30, ha='right')
 
-    # Chart 2: Underwater Drawdown
-    fig2, ax2 = plt.subplots(figsize=(15, 6))
+    # Plot 2: Underwater Drawdown
     ax2.fill_between(portfolio.index, portfolio['Drawdown%'], 0, color='red', alpha=0.3)
     ax2.plot(portfolio.index, portfolio['Drawdown%'], color='red', linewidth=0.8)
-    ax2.set_title('Underwater Drawdown')
+    ax2.set_title('Underwater Drawdown', fontsize=14)
     ax2.set_ylabel('Drawdown %')
     ax2.grid(True, alpha=0.3)
     add_monthly_grids(ax2, calc_start, calc_end)
 
     # Add secondary Y-axis for absolute drawdown values
     ax2_abs = ax2.twinx()
-    # Calculate absolute drawdown (Balance - PeakBalance)
     abs_drawdown = portfolio['Balance'] - portfolio['PeakBalance']
-    ax2_abs.plot(portfolio.index, abs_drawdown, alpha=0) # Invisible plot just to set the scale
+    ax2_abs.plot(portfolio.index, abs_drawdown, alpha=0) 
     ax2_abs.set_ylabel('Drawdown Absolute')
     ax2_abs.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+    plt.setp(ax2.get_xticklabels(), rotation=30, ha='right')
 
     plt.tight_layout()
-    chart2_path = os.path.join(output_dir, "Drawdown_Chart.png")
-    plt.savefig(chart2_path)
+    overview_chart_path = os.path.join(charts_folder, "Portfolio_Overview.png")
+    plt.savefig(overview_chart_path)
     plt.close()
 
     # 8. Consolidated Monthly Contributor Table (with Gradient Color Coding)
@@ -231,8 +241,7 @@ def main():
         f.write(f"**Total Profit:** {(portfolio['Balance'].iloc[-1] - args.base):,.2f}\n\n")
         
         f.write("## Performance Charts\n\n")
-        f.write("![Portfolio Chart](Portfolio_Chart.png)\n\n")
-        f.write("![Drawdown Chart](Drawdown_Chart.png)\n\n")
+        f.write("![Portfolio Overview](charts/Portfolio_Overview.png)\n\n")
         
         f.write(table_html)
 
@@ -249,6 +258,113 @@ def main():
             for sf in overlapping_skipped:
                 f.write(f"- `{sf}`\n")
             f.write("\n")
+
+        # 10. Detailed Per-Report Analysis
+        f.write("## Detailed Per-Report Analysis\n\n")
+        
+        all_trades_files = glob.glob(os.path.join(trades_folder, "all_trades_*.csv"))
+        if not all_trades_files:
+            f.write("No detailed trade files found.\n")
+        else:
+            # Sort files for consistent report order
+            all_trades_files.sort()
+            # Create sets for easy lookup
+            included_files = set(df_deals['SourceFile'].unique()) if not df_deals.empty else set()
+            
+            for atf in all_trades_files:
+                report_basename = os.path.basename(atf).replace("all_trades_", "").replace(".csv", "")
+                # Find original filename (assuming it ends with .html)
+                original_filename = report_basename + ".html"
+                
+                print(f"Generating per-file charts for: {report_basename}...")
+                df_at = pd.read_csv(atf)
+                
+                # Calculate DealPnL
+                df_at['DealPnL'] = df_at['Profit'] + df_at['Commission'] + df_at['Swap']
+                total_pnl = df_at['DealPnL'].sum()
+                
+                # Determine Status
+                status = "Unknown"
+                reason = ""
+                
+                if original_filename in included_files:
+                    status = "Included"
+                elif original_filename in explicitly_skipped:
+                    status = "Skipped"
+                    reason = "Manual (Include=0)"
+                elif original_filename in overlapping_skipped:
+                    status = "Skipped"
+                    reason = "Overlapping trades"
+                else:
+                    # Check if it was filtered out by date range
+                    df_at['Time'] = pd.to_datetime(df_at['Time'])
+                    df_at_filtered = df_at[(df_at['Time'] >= calc_start) & (df_at['Time'] < calc_end)]
+                    if df_at_filtered.empty:
+                        status = "Skipped"
+                        reason = "Date range"
+                    else:
+                        status = "Partially Included" # Should not happen with current logic but safe to have
+
+                df_at['Time'] = pd.to_datetime(df_at['Time'])
+                
+                # Balance calculation
+                df_at_sorted = df_at.sort_values('Time')
+                exits = df_at_sorted[df_at_sorted['Direction'].str.lower().isin(['out', 'in/out'])].copy()
+                
+                if exits.empty:
+                    continue
+                    
+                exits['CumPnL'] = exits['DealPnL'].cumsum()
+                exits['Balance'] = exits['CumPnL'] + args.base
+                exits['Peak'] = exits['Balance'].expanding().max()
+                exits['DD_Pct'] = (exits['Balance'] / exits['Peak'] - 1) * 100
+                
+                # Chart 1x3: Balance, Underwater, and Histogram
+                fig, (ax_bal, ax_dd, ax_hist) = plt.subplots(1, 3, figsize=(20, 6))
+                
+                # Plot 1: Balance Growth
+                ax_bal.plot(exits['Time'], exits['Balance'], color='blue', linewidth=1)
+                ax_bal.set_title(f'Balance Growth', fontsize=12)
+                ax_bal.set_ylabel('Balance')
+                ax_bal.grid(True, alpha=0.3)
+                ax_bal.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+                plt.setp(ax_bal.get_xticklabels(), rotation=30, ha='right')
+                
+                # Plot 2: Underwater Drawdown
+                ax_dd.fill_between(exits['Time'], exits['DD_Pct'], 0, color='red', alpha=0.3)
+                ax_dd.plot(exits['Time'], exits['DD_Pct'], color='red', linewidth=0.8)
+                ax_dd.set_title(f'Underwater Drawdown', fontsize=12)
+                ax_dd.set_ylabel('Drawdown %')
+                ax_dd.grid(True, alpha=0.3)
+                plt.setp(ax_dd.get_xticklabels(), rotation=30, ha='right')
+
+                # Plot 3: Sequence Histogram
+                if 'SequenceNumber' in df_at.columns and 'TradeNumberInSequence' in df_at.columns:
+                    seq_counts = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')['TradeNumberInSequence'].max()
+                    if not seq_counts.empty:
+                        unique_counts, freq = np.unique(seq_counts, return_counts=True)
+                        ax_hist.bar(unique_counts, freq, color='skyblue', edgecolor='black')
+                        ax_hist.set_title("Sequence Length Distribution", fontsize=12)
+                        ax_hist.set_xlabel("Trades in Sequence")
+                        ax_hist.set_ylabel("Frequency")
+                        ax_hist.grid(axis='y', alpha=0.3)
+                        ax_hist.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+                    else:
+                        ax_hist.set_title("No Sequence Data", fontsize=12)
+                else:
+                    ax_hist.set_title("No Sequence Columns Found", fontsize=12)
+                
+                plt.tight_layout()
+                per_file_chart_path = os.path.join(charts_folder, f"Chart_{report_basename}.png")
+                plt.savefig(per_file_chart_path)
+                plt.close()
+                
+                f.write(f"### Report: {report_basename}\n\n")
+                f.write(f"- **Status**: {status} {'(' + reason + ')' if reason else ''}\n")
+                f.write(f"- **Total PnL**: {total_pnl:,.2f}\n\n")
+                f.write(f"![{report_basename} Charts](charts/Chart_{report_basename}.png)\n\n")
+
+    print(f"Analysis complete. Report saved to: {report_path}")
 
 if __name__ == "__main__":
     main()

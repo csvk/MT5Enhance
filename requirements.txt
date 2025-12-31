@@ -2,7 +2,7 @@ pandas
 matplotlib
 numpy
 pyarrow
-argparse
-datetime
+beautifulsoup4
+lxml
 python-dateutil
 pytz

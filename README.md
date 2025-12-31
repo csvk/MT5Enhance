@@ -51,9 +51,3 @@ python analyze.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ```
 *   **Output**: Saves `Full_Analysis.html` and a `charts/` folder inside the output directory.
 
-## Requirements
-- `pandas`
-- `matplotlib`
-- `beautifulsoup4`
-- `lxml`
-- `numpy`

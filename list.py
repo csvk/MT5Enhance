@@ -3,6 +3,7 @@ import glob
 import pandas as pd
 from datetime import datetime
 import argparse
+import shutil
 
 def generate_file_list():
     parser = argparse.ArgumentParser(description='Generate a CSV file list of .htm reports from a parent folder.')
@@ -54,7 +55,17 @@ def generate_file_list():
 
     # Save to CSV
     df.to_csv(output_file, index=False)
+    
+    # Copy .set files to output/sets directory
+    sets_dir = os.path.join(output_dir, "sets")
+    os.makedirs(sets_dir, exist_ok=True)
+    set_files = glob.glob(os.path.join(parent_path, "*.set"))
+    for set_file in set_files:
+        shutil.copy2(set_file, sets_dir)
+    
     print(f"Generated report list with {len(htm_files)} files from {os.path.basename(reports_path)}.")
+    if set_files:
+        print(f"Copied {len(set_files)} .set files to {sets_dir}")
     print(f"Output folder created: {output_dir}")
     print(f"Report list saved to: {output_file}")
 

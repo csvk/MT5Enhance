@@ -379,35 +379,34 @@ def main():
                 print(f"Warning: Could not parse parquet for {html_file_path}: {e}")
                 return None
 
-        def parse_set_file(html_file_path):
-            """Reads .set file from parent directory above the report directory."""
-            params = {
-                "LotSize": "N/A",
-                "MaxLots": "N/A",
-                "LotSizeExponent": "N/A",
-                "DelayTradeSequence": "N/A",
-                "LiveDelay": "N/A"
+        def parse_set_file(html_file_path, sets_dir):
+            """Reads .set file from the provided sets directory with robust matching."""
+            target_params = {
+                "lotsize": "LotSize",
+                "maxlots": "MaxLots",
+                "lotsizeexponent": "LotSizeExponent",
+                "delaytradesequence": "DelayTradeSequence",
+                "livedelay": "LiveDelay",
+                "stoploss": "StopLoss"
             }
+            results = {v: "N/A" for v in target_params.values()}
+            
             try:
-                report_dir = os.path.dirname(html_file_path)
-                parent_dir = os.path.dirname(report_dir)
                 base_name = os.path.splitext(os.path.basename(html_file_path))[0]
-                set_path = os.path.join(parent_dir, f"{base_name}.set")
+                set_path = os.path.join(sets_dir, f"{base_name}.set")
 
                 if not os.path.exists(set_path):
-                    # Try current directory too just in case
-                    set_path_alt = os.path.join(report_dir, f"{base_name}.set")
-                    if os.path.exists(set_path_alt):
-                        set_path = set_path_alt
-                    else:
-                        return params
+                    print(f"  Warning: .set file not found at {set_path}")
+                    return results
 
                 content = None
-                for enc in ['utf-16', 'utf-8']:
+                # Try common encodings for MT4/MT5 .set files
+                for enc in ['utf-16', 'utf-16-le', 'utf-8', 'latin-1', 'cp1252']:
                     try:
                         with open(set_path, 'r', encoding=enc, errors='ignore') as sf:
                             content = sf.read()
                             if '=' in content:
+                                # print(f"  Info: Successfully read {set_path} with {enc}")
                                 break
                     except:
                         continue
@@ -415,14 +414,21 @@ def main():
                 if content:
                     for line in content.splitlines():
                         if '=' in line:
-                            key, val = line.split('=', 1)
-                            key = key.strip()
-                            if key in params:
-                                params[key] = val.strip().split('||')[0]
-                return params
+                            # Split only on the first '='
+                            parts = line.split('=', 1)
+                            if len(parts) == 2:
+                                key = parts[0].strip().lower()
+                                val = parts[1].strip()
+                                if key in target_params:
+                                    clean_val = val.split('||')[0].strip()
+                                    results[target_params[key]] = clean_val
+                else:
+                    print(f"  Warning: Could not read content of {set_path}")
+                
+                return results
             except Exception as e:
-                print(f"Warning: Could not parse .set file for {html_file_path}: {e}")
-                return params
+                print(f"Warning: Error parsing .set file for {html_file_path}: {e}")
+                return results
 
         if not all_trades_files:
             f.write("<p>No detailed trade files found.</p>\n")
@@ -518,7 +524,8 @@ def main():
                 df_parquet = load_parquet_data(full_html_path) if full_html_path else None
                 
                 # Load .set file data if available
-                set_params = parse_set_file(full_html_path) if full_html_path else None
+                sets_dir = os.path.join(output_dir, "sets")
+                set_params = parse_set_file(full_html_path, sets_dir) if full_html_path else None
                 
                 # Balance calculation from HTML trades (for fallback or comparison)
                 df_at_sorted = df_at.sort_values('Time')
@@ -668,6 +675,7 @@ def main():
                     f.write("<ul class='params-list'>\n")
                     if set_params:
                         f.write(f"<li>Lot Size: <code>{set_params['LotSize']}</code></li>\n")
+                        f.write(f"<li>Stop Loss: <code>{set_params['StopLoss']}</code></li>\n")
                         f.write(f"<li>Max Lots: <code>{set_params['MaxLots']}</code></li>\n")
                         f.write(f"<li>Lot Size Exponent: <code>{set_params['LotSizeExponent']}</code></li>\n")
                         f.write(f"<li>Delay Trade Sequence: <code>{set_params['DelayTradeSequence']}</code></li>\n")

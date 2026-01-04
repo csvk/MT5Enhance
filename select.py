@@ -31,8 +31,10 @@ def select_files():
     # 2. Create subfolders
     csv_out_dir = os.path.join(selected_dir, "CSV")
     html_out_dir = os.path.join(selected_dir, "HTML")
+    sets_out_dir = os.path.join(selected_dir, "sets")
     os.makedirs(csv_out_dir, exist_ok=True)
     os.makedirs(html_out_dir, exist_ok=True)
+    os.makedirs(sets_out_dir, exist_ok=True)
 
     # 3. Read report_list.csv for original paths
     df_list = pd.read_csv(report_list_path)
@@ -68,19 +70,47 @@ def select_files():
 
     print(f"Found {len(selected_files)} reports to process.")
 
-    # 5. Copy files
+    # 5. Copy and modify files
     sets_in_dir = os.path.join(output_dir, "sets")
+    magic_counter = 1
     
     for file_name in selected_files:
         original_htm_path = path_map[file_name]
         base_name = os.path.splitext(file_name)[0]
         
-        # a. Copy .set file from output/sets/
+        # a. Copy and modify .set file from output/sets/
         set_file_name = f"{base_name}.set"
         set_in_path = os.path.join(sets_in_dir, set_file_name)
         if os.path.exists(set_in_path):
-            shutil.copy2(set_in_path, selected_dir)
-            print(f"  Copied: {set_file_name} -> selected/")
+            set_out_path = os.path.join(sets_out_dir, set_file_name)
+            
+            content = None
+            # Try different encodings
+            for enc in ['utf-16', 'utf-16-le', 'utf-8', 'cp1252']:
+                try:
+                    with open(set_in_path, 'r', encoding=enc) as f:
+                        content = f.read()
+                    break
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+            
+            if content is None:
+                print(f"  Error: Could not decode {set_file_name} with supported encodings.")
+                continue
+
+            # The format is MAGIC_NUMBER=1||777||1||7770||N
+            # We want to replace the first number (before the first ||)
+            pattern = r'(MAGIC_NUMBER=)(\d+)(\|\|.*)'
+            new_content = re.sub(pattern, rf'\g<1>{magic_counter}\g<3>', content)
+            
+            # Write back in UTF-8 for consistency or keep original? 
+            # Usually UTF-8 is safer for modern tools, but MT might expect what it had.
+            # Let's write in UTF-8 as it's more universal and shouldn't break MT.
+            with open(set_out_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+                
+            print(f"  Processed: {set_file_name} -> selected/sets/ (Magic Number: {magic_counter})")
+            magic_counter += 1
         else:
             print(f"  Warning: .set file not found: {set_in_path}")
 

@@ -7,6 +7,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
 - `select.py`: (Optional) Extracts and organizes key files (`.set`, `.htm`, `.parquet`) for reports identified in the final analysis.
+- `sets2csv.py`: (Utility) Converts a folder of `.set` or `.chr` files into a single `all_sets_<ext>_<timestamp>.csv` with all parameters.
 
 ## Expected Directory Structure
 ```text
@@ -28,7 +29,8 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 │       │   ├── selected_trades_SymbolA.csv
 │       │   └── selected_trades_SymbolB.csv
 │       └── selected/                  <-- Created in Step 4
-│           ├── File1.set
+│           ├── sets/                  <-- Incremental magic numbers
+│           │   └── File1.set
 │           ├── HTML/
 │           │   └── File1.htm
 │           └── CSV/
@@ -66,4 +68,15 @@ Extract and organize relevant files for a focused review of the contributors.
 ```bash
 python select.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ```
-*   **Output**: Creates a `selected/` folder **inside** your output directory with `CSV` and `HTML` subfolders, containing the relevant `.set`, `.htm`, and `.parquet` files.
+*   **Output**: Creates a `selected/` folder **inside** your output directory with `CSV`, `HTML`, and `sets` subfolders. Each `.set` file is assigned a unique, incremental magic number.
+
+## Utility Scripts
+
+### Export Parameters to CSV
+Convert a directory of MT5 `.set` or `.chr` files into a single CSV for easy comparison.
+```bash
+python sets2csv.py "C:/Path/To/Your/Sets"
+```
+*   **Auto-Detection**: The script automatically detects the file type in the folder.
+*   **Constraint**: The folder must contain only one type of file (`.set` OR `.chr`).
+*   **Output**: Generates `all_sets_set_YYYYMMDD_HHMMSS.csv` or `all_sets_chr_YYYYMMDD_HHMMSS.csv` within the same directory.

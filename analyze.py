@@ -531,8 +531,8 @@ def main():
                 df_at_sorted = df_at.sort_values('Time')
                 exits = df_at_sorted[df_at_sorted['Direction'].str.lower().isin(['out', 'in/out'])].copy()
                 
-                # Chart 1x3: Balance, Underwater, and Histogram
-                fig, (ax_bal, ax_dd, ax_hist) = plt.subplots(1, 3, figsize=(20, 6))
+                # Chart 2x2: Balance, Underwater, Histogram, and Hold Times
+                fig, ((ax_bal, ax_dd), (ax_hist, ax_hold)) = plt.subplots(2, 2, figsize=(16, 12))
                 
                 max_dd_pct = 0.0
                 max_dd_abs = 0.0
@@ -606,10 +606,22 @@ def main():
                 if 'SequenceNumber' in df_at.columns and 'TradeNumberInSequence' in df_at.columns:
                     seq_groups = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')
                     seq_data = []
+                    hold_times = []
+                    
                     for _, group in seq_groups:
                         length = group['TradeNumberInSequence'].max()
-                        pnl = group[group['Direction'].str.lower().isin(['out', 'in/out'])]['DealPnL'].sum()
+                        pnl = group[group['Direction'].astype(str).str.lower().isin(['out', 'in/out'])]['DealPnL'].sum()
                         seq_data.append({'Length': length, 'PnL': pnl})
+                        
+                        # Hold time calculation: First in to first out
+                        first_in = group[(group['TradeNumberInSequence'] == 1) & (group['Direction'].astype(str).str.lower() == 'in')]
+                        first_out = group[group['Direction'].astype(str).str.lower().isin(['out', 'in/out'])].sort_values('Time')
+                        
+                        if not first_in.empty and not first_out.empty:
+                            entry_t = pd.to_datetime(first_in.iloc[0]['Time'])
+                            exit_t = pd.to_datetime(first_out.iloc[0]['Time'])
+                            duration = (exit_t - entry_t).total_seconds() / 3600.0 # Duration in hours
+                            hold_times.append(duration)
                     
                     if seq_data:
                         df_seq_curr = pd.DataFrame(seq_data)
@@ -637,8 +649,40 @@ def main():
                         ax_hist.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
                     else:
                         ax_hist.set_title("No Sequence Data", fontsize=12)
+
+                    # Plot 4: Sequence Hold Times (Scatter)
+                    if hold_times:
+                        x_vals = range(1, len(hold_times) + 1)
+                        
+                        # Background Histogram
+                        ax_hold_hist = ax_hold.twiny()
+                        ax_hold_hist.hist(hold_times, orientation='horizontal', bins='auto', color='red', alpha=0.1)
+                        ax_hold_hist.set_axis_off() # Hide the secondary x-axis
+                        
+                        ax_hold.scatter(x_vals, hold_times, color='blue', alpha=0.6, s=30, label='Hold Time')
+                        
+                        avg_h = np.mean(hold_times)
+                        min_h = np.min(hold_times)
+                        max_h = np.max(hold_times)
+                        
+                        ax_hold.axhline(avg_h, color='red', linestyle='--', linewidth=1, label=f'Mean: {avg_h:.2f}h')
+                        ax_hold.axhline(min_h, color='green', linestyle=':', linewidth=1, label=f'Min: {min_h:.2f}h')
+                        ax_hold.axhline(max_h, color='orange', linestyle=':', linewidth=1, label=f'Max: {max_h:.2f}h')
+                        
+                        ax_hold.set_title("Sequence Hold Times (1st Trade)", fontsize=12)
+                        ax_hold.set_xlabel("Sequence #")
+                        ax_hold.set_ylabel("Hours")
+                        ax_hold.grid(True, alpha=0.3)
+                        ax_hold.legend(fontsize=8, loc='best')
+                        
+                        # Add text box with statistics
+                        stats_text = f"Mean: {avg_h:.2f}h\nMin: {min_h:.2f}h\nMax: {max_h:.2f}h"
+                        ax_hold.text(0.95, 0.05, stats_text, transform=ax_hold.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    else:
+                        ax_hold.set_title("No Hold Time Data", fontsize=12)
                 else:
                     ax_hist.set_title("No Sequence Columns Found", fontsize=12)
+                    ax_hold.set_title("No Sequence Columns Found", fontsize=12)
                 
                 plt.tight_layout()
                 per_file_chart_path = os.path.join(charts_folder, f"Chart_{report_basename}.png")

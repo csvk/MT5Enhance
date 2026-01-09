@@ -6,7 +6,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 - `list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list and a `sets/` folder.
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
-- `select.py`: (Optional) Extracts and organizes key files (`.set`, `.htm`, `.parquet`) for reports identified in the final analysis.
+- `export.py`: (Optional) Extracts and organizes key files (`.set`, `.htm`, `.parquet`) for reports identified in the final analysis.
 - `sets2csv.py`: (Utility) Converts a folder of `.set` or `.chr` files into a single `all_sets_<ext>_<timestamp>.csv` with all parameters.
 
 ## Expected Directory Structure
@@ -63,10 +63,10 @@ python analyze.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ```
 *   **Output**: Saves `Full_Analysis.html` and a `charts/` folder inside the output directory.
 
-### Step 4: Selective Extraction (Optional)
+### Step 4: Selective Export (Optional)
 Extract and organize relevant files for a focused review of the contributors.
 ```bash
-python select.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
+python export.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ```
 *   **Output**: Creates a `selected/` folder **inside** your output directory with `CSV`, `HTML`, and `sets` subfolders. Each `.set` file is assigned a unique, incremental magic number.
 

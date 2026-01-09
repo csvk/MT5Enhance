@@ -5,8 +5,8 @@ import pandas as pd
 import re
 import glob
 
-def select_files():
-    parser = argparse.ArgumentParser(description='Select and organize files based on Full_Analysis.html report.')
+def export_files():
+    parser = argparse.ArgumentParser(description='Export and organize files based on Full_Analysis.html report.')
     parser.add_argument('output_folder', type=str, help='Path to the output folder containing Full_Analysis.html and report_list.csv')
     args = parser.parse_args()
 
@@ -140,4 +140,4 @@ def select_files():
     print(f"\nSelection complete. Files are organized in: {selected_dir}")
 
 if __name__ == "__main__":
-    select_files()
+    export_files()

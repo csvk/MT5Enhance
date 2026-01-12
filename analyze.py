@@ -895,9 +895,35 @@ def main():
                 ax_hold = ax_flat[3]
                 ax_vol = ax_flat[4]
                 ax_theo_dd = ax_flat[5]
-                ax_seq_month = ax_flat[6]
-                ax_pnl_month = ax_flat[7]
+                ax_monthly_combined = ax_flat[6]
+                ax_pip_gap = ax_flat[7]
                 
+                def align_dual_axes(ax1, ax2):
+                    """Alignsthe zero lines of two dual Y-axes."""
+                    l1, r1 = ax1.get_ylim()
+                    l2, r2 = ax2.get_ylim()
+                    
+                    # If both are entirely positive, 0 is already aligned at the bottom
+                    if l1 >= 0 and l2 >= 0:
+                        ax1.set_ylim(0, r1)
+                        ax2.set_ylim(0, r2)
+                        return
+
+                    low1, high1 = min(0, l1), max(0, r1)
+                    low2, high2 = min(0, l2), max(0, r2)
+                    
+                    if high1 == low1: high1 = low1 + 1
+                    if high2 == low2: high2 = low2 + 1
+                    
+                    # Ratios of negative part to positive part
+                    r1_ratio = low1 / high1
+                    r2_ratio = low2 / high2
+                    
+                    if r1_ratio < r2_ratio: # ax1 is relatively more negative
+                        ax2.set_ylim(r1_ratio * high2, high2)
+                    else: # ax2 is relatively more negative
+                        ax1.set_ylim(r2_ratio * high1, high1)
+
                 # Hide unused axes
                 for ax_u in ax_flat[8:]:
                     ax_u.set_axis_off()
@@ -1019,12 +1045,31 @@ def main():
                     seq_groups = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')
                     seq_data = []
                     hold_times = []
+                    pip_gaps = []
                     
+                    # Ensure we have a point for calculation
+                    # (Usually detected earlier in theoretical DD calc part)
+                    if 'detected_point' not in locals() or detected_point is None:
+                        # Fallback heuristic
+                        s_sym = str(df_at.iloc[0]['Symbol']).upper() if 'Symbol' in df_at.columns else ""
+                        curr_point = 0.01 if "JPY" in s_sym else 0.0001
+                    else:
+                        curr_point = detected_point
+
                     for _, group in seq_groups:
-                        length = group['TradeNumberInSequence'].max()
-                        pnl = group[group['Direction'].astype(str).str.lower().isin(['out', 'in/out'])]['DealPnL'].sum()
+                        group_sorted = group.sort_values('Time')
+                        length = group_sorted['TradeNumberInSequence'].max()
+                        pnl = group_sorted[group_sorted['Direction'].astype(str).str.lower().isin(['out', 'in/out'])]['DealPnL'].sum()
                         seq_data.append({'Length': length, 'PnL': pnl})
                         
+                        # Pip Gaps: Only for consecutive 'in' trades in the same sequence
+                        in_trades = group_sorted[group_sorted['Direction'].astype(str).str.lower() == 'in']
+                        if len(in_trades) > 1:
+                            prices = in_trades['Price'].values
+                            for i in range(len(prices) - 1):
+                                gap = abs(prices[i+1] - prices[i]) / curr_point
+                                pip_gaps.append(gap)
+
                         # Hold time calculation: First in to first out
                         first_in = group[(group['TradeNumberInSequence'] == 1) & (group['Direction'].astype(str).str.lower() == 'in')]
                         first_out = group[group['Direction'].astype(str).str.lower().isin(['out', 'in/out'])].sort_values('Time')
@@ -1042,23 +1087,47 @@ def main():
                             TotalPnL=('PnL', 'sum')
                         ).reset_index()
                         
+                        x_dist = np.arange(len(dist_agg_curr))
+                        width_dist = 0.35
+                        
                         # Primary axis: Frequency
-                        color_freq = 'tab:blue'
-                        width_pnl = 0.8
-                        width_freq = 0.4
-                        
-                        ax_hist_pnl = ax_hist.twinx()
-                        ax_hist_pnl.bar(dist_agg_curr['Length'], dist_agg_curr['TotalPnL'], width=width_pnl, color='green', alpha=0.3, label='Total PnL')
-                        ax_hist_pnl.set_ylabel('Total PnL', color='green')
-                        ax_hist_pnl.tick_params(axis='y', labelcolor='green')
-                        
-                        ax_hist.bar(dist_agg_curr['Length'], dist_agg_curr['Frequency'], width=width_freq, color=color_freq, label='Frequency', edgecolor='black', linewidth=0.5)
+                        rects_f = ax_hist.bar(x_dist - width_dist/2, dist_agg_curr['Frequency'], width=width_dist, color='tab:blue', alpha=0.6, label='Frequency', edgecolor='black', linewidth=0.5)
                         ax_hist.set_title("Sequence PnL Distribution", fontsize=12)
                         ax_hist.set_xlabel("Trades in Sequence")
-                        ax_hist.set_ylabel("Frequency", color=color_freq)
-                        ax_hist.tick_params(axis='y', labelcolor=color_freq)
+                        ax_hist.set_ylabel("Frequency", color='tab:blue')
+                        ax_hist.tick_params(axis='y', labelcolor='tab:blue')
+                        ax_hist.set_xticks(x_dist)
+                        ax_hist.set_xticklabels(dist_agg_curr['Length'])
                         ax_hist.grid(axis='y', alpha=0.3)
-                        ax_hist.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+                        
+                        # Secondary axis: PnL
+                        ax_hist_pnl = ax_hist.twinx()
+                        dist_pnl_colors = ['green' if val >= 0 else 'red' for val in dist_agg_curr['TotalPnL']]
+                        rects_p = ax_hist_pnl.bar(x_dist + width_dist/2, dist_agg_curr['TotalPnL'], width=width_dist, color=dist_pnl_colors, alpha=0.5, label='Total PnL', edgecolor='black', linewidth=0.5)
+                        ax_hist_pnl.set_ylabel('Total PnL', color='darkgreen')
+                        ax_hist_pnl.tick_params(axis='y', labelcolor='darkgreen')
+                        ax_hist_pnl.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+                        # Align Zeros
+                        align_dual_axes(ax_hist, ax_hist_pnl)
+
+                        # Annotations for Frequency
+                        for rect in rects_f:
+                            h = rect.get_height()
+                            if h > 0:
+                                ax_hist.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h), xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8, color='tab:blue')
+
+                        # Annotations for PnL
+                        for rect in rects_p:
+                            h = rect.get_height()
+                            if abs(h) > 0.01:
+                                offset = 3 if h >= 0 else -10
+                                ax_hist_pnl.annotate(f'{h:,.0f}', xy=(rect.get_x() + rect.get_width()/2, h), xytext=(0, offset), textcoords="offset points", ha='center', va='bottom' if h >= 0 else 'top', fontsize=7, fontweight='bold')
+
+                        # Legend
+                        lns1, lbs1 = ax_hist.get_legend_handles_labels()
+                        lns2, lbs2 = ax_hist_pnl.get_legend_handles_labels()
+                        ax_hist.legend(lns1 + lns2, lbs1 + lbs2, loc='upper right', fontsize=8)
                     else:
                         ax_hist.set_title("No Sequence Data", fontsize=12)
 
@@ -1092,6 +1161,27 @@ def main():
                         ax_hold.text(0.95, 0.05, stats_text, transform=ax_hold.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     else:
                         ax_hold.set_title("No Hold Time Data", fontsize=12)
+
+                    # Plot 8: Pip Gap Distribution
+                    if pip_gaps:
+                        ax_pip_gap.hist(pip_gaps, bins='auto', color='tab:orange', alpha=0.7, edgecolor='black', linewidth=0.5)
+                        ax_pip_gap.set_title("Pip Gap Distribution", fontsize=12)
+                        ax_pip_gap.set_xlabel("Pips")
+                        ax_pip_gap.set_ylabel("Frequency")
+                        ax_pip_gap.grid(True, alpha=0.3)
+                        
+                        avg_gap = np.mean(pip_gaps)
+                        med_gap = np.median(pip_gaps)
+                        max_gap = np.max(pip_gaps)
+                        
+                        ax_pip_gap.axvline(avg_gap, color='red', linestyle='--', linewidth=1, label=f'Mean: {avg_gap:.1f}')
+                        ax_pip_gap.axvline(med_gap, color='green', linestyle=':', linewidth=1, label=f'Median: {med_gap:.1f}')
+                        ax_pip_gap.legend(fontsize=8)
+                        
+                        stats_text = f"Count: {len(pip_gaps)}\nMax: {max_gap:.1f}"
+                        ax_pip_gap.text(0.95, 0.95, stats_text, transform=ax_pip_gap.transAxes, fontsize=9, verticalalignment='top', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    else:
+                        ax_pip_gap.set_title("No Pip Gap Data", fontsize=12)
                     # Plot 6: Theoretical Drawdown Over Time
                     if theoretical_dd_series:
                         df_theo = pd.DataFrame(theoretical_dd_series).sort_values('Time')
@@ -1123,86 +1213,87 @@ def main():
                         ax_theo_dd.set_title("No Theoretical DD Data", fontsize=12)
                         ax_theo_dd.set_axis_off()
 
-                    # Plot 7: Sequences per Month
-                    if 'SequenceNumber' in df_at.columns:
-                        try:
-                            # Filter for valid sequences (TradeNumber 1 serves as a proxy for sequence start)
-                            df_seq_starts = df_at[
-                                (df_at['SequenceNumber'] > 0) & 
-                                (df_at['TradeNumberInSequence'] == 1) & 
-                                (df_at['Direction'].astype(str).str.lower() == 'in')
-                            ].copy()
-                            
-                            
-                            if not df_seq_starts.empty:
-                                # Create full range of months from calc_start to calc_end
-                                all_months = pd.period_range(start=calc_start, end=calc_end, freq='M')
-                                
-                                df_seq_starts['Month'] = df_seq_starts['Time'].dt.to_period('M')
-                                monthly_counts = df_seq_starts.groupby('Month').size()
-                                
-                                # Reindex to include all months, fill missing with 0
-                                monthly_counts = monthly_counts.reindex(all_months, fill_value=0)
-                                monthly_counts.index = monthly_counts.index.astype(str)
-                                
-                                monthly_counts.plot(kind='bar', ax=ax_seq_month, color='purple', alpha=0.6, edgecolor='black')
-                                ax_seq_month.set_title("Sequences per Month", fontsize=12)
-                                ax_seq_month.set_xlabel("Month")
-                                ax_seq_month.set_ylabel("Count")
-                                ax_seq_month.grid(axis='y', alpha=0.3)
-                                plt.setp(ax_seq_month.get_xticklabels(), rotation=45, ha='right')
-                                
-                                # Annotate bars
-                                for p in ax_seq_month.patches:
-                                    height = int(p.get_height())
-                                    ax_seq_month.annotate(f'{height}', (p.get_x() + p.get_width() / 2., height), 
-                                                          ha='center', va='bottom', fontsize=9)
-                            else:
-                                ax_seq_month.set_title("No Sequences Found", fontsize=12)
-                        except Exception as e:
-                            print(f"Error plotting Sequences per Month: {e}")
-                            ax_seq_month.set_title("Error Plotting Sequences", fontsize=12)
-                    else:
-                        ax_seq_month.set_title("No Sequence Data", fontsize=12)
-
-                    # Plot 8: PnL per Month
+                    # Plot 7: Monthly Activity (Sequences & PnL - Combined)
                     if not df_at.empty:
                         try:
-                            df_pnl_monthly = df_at[df_at['Direction'].astype(str).str.lower().isin(['out', 'in/out'])].copy()
-                            
-                            # Create full range of months from calc_start to calc_end
+                            # 1. Prepare Data
                             all_months = pd.period_range(start=calc_start, end=calc_end, freq='M')
-                            
-                            df_pnl_monthly['Month'] = df_pnl_monthly['Time'].dt.to_period('M')
-                            monthly_pnl_sum = df_pnl_monthly.groupby('Month')['DealPnL'].sum()
-                            
-                            # Reindex to include all months, fill missing with 0
-                            monthly_pnl_sum = monthly_pnl_sum.reindex(all_months, fill_value=0.0)
-                            monthly_pnl_sum.index = monthly_pnl_sum.index.astype(str)
-                            
-                            # Define colors: Green for positive, Red for negative
-                            colors = ['green' if x >= 0 else 'red' for x in monthly_pnl_sum.values]
-                            
-                            monthly_pnl_sum.plot(kind='bar', ax=ax_pnl_month, color=colors, alpha=0.6, edgecolor='black')
-                            ax_pnl_month.set_title("PnL per Month", fontsize=12)
-                            ax_pnl_month.set_xlabel("Month")
-                            ax_pnl_month.set_ylabel("PnL")
-                            ax_pnl_month.grid(axis='y', alpha=0.3)
-                            plt.setp(ax_pnl_month.get_xticklabels(), rotation=45, ha='right')
-                            
-                            # Annotate bars
-                            for p in ax_pnl_month.patches:
-                                height = p.get_height()
-                                # Use a small offset depending on sign
-                                offset = 5 if height >= 0 else -15
-                                ax_pnl_month.annotate(f'{height:,.0f}', (p.get_x() + p.get_width() / 2., height), 
-                                                      xytext=(0, offset), textcoords='offset points',
-                                                      ha='center', va='bottom', fontsize=8)
+                            month_labels = [str(m) for m in all_months]
+                            x = np.arange(len(all_months))
+                            width = 0.35
+
+                            # Monthly Sequence Counts
+                            monthly_counts = pd.Series(0, index=all_months)
+                            if 'SequenceNumber' in df_at.columns:
+                                df_seq_starts = df_at[
+                                    (df_at['SequenceNumber'] > 0) & 
+                                    (df_at['TradeNumberInSequence'] == 1) & 
+                                    (df_at['Direction'].astype(str).str.lower() == 'in')
+                                ].copy()
+                                if not df_seq_starts.empty:
+                                    df_seq_starts['Month'] = df_seq_starts['Time'].dt.to_period('M')
+                                    counts = df_seq_starts.groupby('Month').size()
+                                    monthly_counts.update(counts)
+
+                            # Monthly PnL
+                            monthly_pnl_sum = pd.Series(0.0, index=all_months)
+                            df_pnl_monthly = df_at[df_at['Direction'].astype(str).str.lower().isin(['out', 'in/out'])].copy()
+                            if not df_pnl_monthly.empty:
+                                df_pnl_monthly['Month'] = df_pnl_monthly['Time'].dt.to_period('M')
+                                pnl_sum = df_pnl_monthly.groupby('Month')['DealPnL'].sum()
+                                monthly_pnl_sum.update(pnl_sum)
+
+                            # 2. Plotting
+                            # Primary Axis: Sequences
+                            rects1 = ax_monthly_combined.bar(x - width/2, monthly_counts.values, width, color='purple', alpha=0.5, label='Sequences', edgecolor='black')
+                            ax_monthly_combined.set_ylabel('Sequence Count', color='purple')
+                            ax_monthly_combined.tick_params(axis='y', labelcolor='purple')
+                            ax_monthly_combined.set_title("Monthly Activity (Sequences & PnL)", fontsize=12)
+                            ax_monthly_combined.set_xticks(x)
+                            ax_monthly_combined.set_xticklabels(month_labels, rotation=45, ha='right')
+                            ax_monthly_combined.grid(axis='y', alpha=0.3)
+
+                            # Secondary Axis: PnL
+                            ax_pnl_twin = ax_monthly_combined.twinx()
+                            pnl_colors = ['green' if val >= 0 else 'red' for val in monthly_pnl_sum.values]
+                            rects2 = ax_pnl_twin.bar(x + width/2, monthly_pnl_sum.values, width, color=pnl_colors, alpha=0.5, label='PnL', edgecolor='black')
+                            ax_pnl_twin.set_ylabel('PnL', color='darkgreen')
+                            ax_pnl_twin.tick_params(axis='y', labelcolor='darkgreen')
+                            ax_pnl_twin.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+                            # Align Zeros
+                            align_dual_axes(ax_monthly_combined, ax_pnl_twin)
+
+                            # Annotations for Sequences
+                            for rect in rects1:
+                                height = rect.get_height()
+                                if height > 0:
+                                    ax_monthly_combined.annotate(f'{int(height)}',
+                                                xy=(rect.get_x() + rect.get_width() / 2, height),
+                                                xytext=(0, 3), textcoords="offset points",
+                                                ha='center', va='bottom', fontsize=8, color='purple')
+
+                            # Annotations for PnL
+                            for rect in rects2:
+                                height = rect.get_height()
+                                if abs(height) > 0.01:
+                                    offset = 12 if height >= 0 else -18
+                                    ax_pnl_twin.annotate(f'{height:,.0f}',
+                                                xy=(rect.get_x() + rect.get_width() / 2, height),
+                                                xytext=(0, offset), textcoords="offset points",
+                                                ha='center', va='bottom' if height >= 0 else 'top', 
+                                                fontsize=7, fontweight='bold')
+
+                            # Combined Legend
+                            lines1, labels1 = ax_monthly_combined.get_legend_handles_labels()
+                            lines2, labels2 = ax_pnl_twin.get_legend_handles_labels()
+                            ax_monthly_combined.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=8)
+
                         except Exception as e:
-                            print(f"Error plotting PnL per Month: {e}")
-                            ax_pnl_month.set_title("Error Plotting Monthly PnL", fontsize=12)
+                            print(f"Error plotting Monthly Activity: {e}")
+                            ax_monthly_combined.set_title("Error Plotting Monthly Activity", fontsize=12)
                     else:
-                        ax_pnl_month.set_title("No Trade Data for PnL", fontsize=12)
+                        ax_monthly_combined.set_title("No Data for Monthly Activity", fontsize=12)
                 
                 plt.tight_layout()
                 per_file_chart_path = os.path.join(charts_folder, f"Chart_{report_basename}.png")

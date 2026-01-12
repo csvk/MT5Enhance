@@ -9,6 +9,7 @@ from datetime import datetime
 import numpy as np
 import math
 import webbrowser
+from bs4 import BeautifulSoup
 
 def main():
     parser = argparse.ArgumentParser(description='Comprehensive Portfolio Analysis')
@@ -283,6 +284,8 @@ def main():
         .status-partial { color: #f39c12; font-weight: bold; }
         .params-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; list-style: none; padding: 0; margin-top: 10px; }
         .params-list li { border: 1px solid #ddd; border-left: 5px solid #3498db; padding: 8px 12px; background: #fff; font-size: 0.95em; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-bottom: 0; min-width: unset; }
+        .metrics-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; list-style: none; padding: 0; margin-bottom: 20px; }
+        .metrics-list li { border: 1px solid #ddd; border-left: 5px solid #27ae60; padding: 8px 12px; background: #fff; font-size: 0.95em; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-bottom: 0; min-width: unset; }
     </style>
     """
 
@@ -388,7 +391,10 @@ def main():
                 "delaytradesequence": "DelayTradeSequence",
                 "livedelay": "LiveDelay",
                 "maxorders": "MaxOrders",
-                "stoploss": "StopLoss"
+                "stoploss": "StopLoss",
+                "pipstep": "PipStep",
+                "pipstepexponent": "PipStepExponent",
+                "maxpipstep": "MaxPipStep"
             }
             results = {v: "N/A" for v in target_params.values()}
             
@@ -430,6 +436,129 @@ def main():
             except Exception as e:
                 print(f"Warning: Error parsing .set file for {html_file_path}: {e}")
                 return results
+
+        def extract_report_metrics(html_file_path):
+            """Extracts Profit Factor and Recovery Factor from the HTML report."""
+            metrics = {'ProfitFactor': 'N/A', 'RecoveryFactor': 'N/A'}
+            if not html_file_path or not os.path.exists(html_file_path):
+                return metrics
+            
+            try:
+                content = None
+                for encoding in ['utf-16', 'utf-8', 'cp1252']:
+                    try:
+                        with open(html_file_path, 'r', encoding=encoding, errors='ignore') as f:
+                            content = f.read()
+                        if content: break
+                    except: continue
+                
+                if not content: return metrics
+
+                soup = BeautifulSoup(content, 'lxml')
+                
+                # Profit Factor
+                # Search for text containing "Profit Factor"
+                # MT5 Report structure usually: <td ...>Profit Factor:</td><td ...>1.23</td>
+                pf_node = soup.find(string=lambda text: text and "Profit Factor" in text)
+                if pf_node:
+                    parent = pf_node.find_parent('td')
+                    if parent:
+                        next_td = parent.find_next_sibling('td')
+                        if next_td:
+                            metrics['ProfitFactor'] = next_td.get_text(strip=True)
+
+                # Recovery Factor
+                rf_node = soup.find(string=lambda text: text and "Recovery Factor" in text)
+                if rf_node:
+                    parent = rf_node.find_parent('td')
+                    if parent:
+                        next_td = parent.find_next_sibling('td')
+                        if next_td:
+                            metrics['RecoveryFactor'] = next_td.get_text(strip=True)
+                            
+            except Exception as e:
+                print(f"Warning: Error extracting metrics from {html_file_path}: {e}")
+            
+            return metrics
+
+        def load_all_fx_rates(base_dir):
+            """Loads daily FX closing prices from the prices/ folder."""
+            prices_dir = os.path.join(base_dir, "prices")
+            rates = {}
+            if os.path.exists(prices_dir):
+                files = glob.glob(os.path.join(prices_dir, "*.csv"))
+                for f in files:
+                    s = os.path.splitext(os.path.basename(f))[0].upper()
+                    try:
+                        rdf = pd.read_csv(f)
+                        rdf['Date'] = pd.to_datetime(rdf['Date']).dt.date
+                        rdf.set_index('Date', inplace=True)
+                        rates[s] = rdf
+                    except: pass
+            return rates
+
+        all_fx_rates = load_all_fx_rates(output_dir)
+
+        def get_usd_conv_factor(symbol, target_date, fx_rates):
+            """Calculates conversion factor to USD based on the quote currency."""
+            # Clean symbol (remove suffixes like .m, .pro, etc.)
+            # Assuming standard 6-char pair is at the start
+            clean_symbol = symbol.split('.')[0].split('_')[0]
+            if len(clean_symbol) < 6:
+                # Try to extract first 6 alphas if delimiters failed
+                import re
+                match = re.match(r'^([A-Za-z]{6})', symbol)
+                if match:
+                    clean_symbol = match.group(1)
+                else:
+                    return 1.0
+            
+            clean_symbol = clean_symbol.upper()
+            quote = clean_symbol[3:] # Last 3 chars of the pair (e.g. JPY from USDJPY)
+            
+            if quote == "USD": return 1.0
+            
+            # Pairs to look for: USD{Quote} (e.g. USDJPY) or {Quote}USD (e.g. GBPUSD)
+            s1, s2 = f"USD{quote}", f"{quote}USD"
+            target_d = target_date.date() if hasattr(target_date, 'date') else target_date
+            
+            # Helper to find rate
+            def find_rate(sym_key, invert):
+                if sym_key in fx_rates:
+                    df = fx_rates[sym_key]
+                    try:
+                        # Use get_indexer to find nearest date (method='pad' for forward fill)
+                        if idx != -1:
+                            row_val = df.iloc[idx]
+                            # Handle different column names (list.py saves as 'Price', yahoo might return 'Close', 'Adj Close')
+                            if 'Price' in row_val: val = row_val['Price']
+                            elif 'Close' in row_val: val = row_val['Close']
+                            elif 'Adj Close' in row_val: val = row_val['Adj Close']
+                            else: val = row_val.iloc[0] # Fallback to first column
+                            
+                            return 1.0/val if invert else val
+                    except: pass
+                return None
+
+            # Try exact match first
+            r = find_rate(s1, True) # USDGBP -> Invert to get USD value? No.
+            # If pair is USDJPY (Base=USD, Quote=JPY). Price is JPY per USD.
+            # Value in Quote (JPY). To get USD: Divide by Price (USD/JPY).
+            # So if we find USDJPY, we want (1/Rate). Correct. (Invert=True)
+            
+            if r is not None: return r
+            
+            r = find_rate(s2, False) # GBPUSD. Price is USD per GBP.
+            # Value in Quote (GBP). To get USD: Multiply by Price.
+            # So if we find GBPUSD, we want Rate. Correct. (Invert=False)
+            
+            if r is not None: return r
+            
+            # If we are here, we failed to find a rate.
+            # Print a warning once per symbol to avoid spam?
+            # For now, just print to console
+            # print(f"Warning: No FX rate found for {symbol} (Quote: {quote}) on {target_d}. Using 1.0.")
+            return 1.0
 
         if not all_trades_files:
             f.write("<p>No detailed trade files found.</p>\n")
@@ -531,6 +660,156 @@ def main():
                 sets_dir = os.path.join(output_dir, "sets")
                 set_params = parse_set_file(full_html_path, sets_dir) if full_html_path else None
                 
+                # Extract Report Metrics
+                report_metrics = extract_report_metrics(full_html_path) if full_html_path else {'ProfitFactor': 'N/A', 'RecoveryFactor': 'N/A'}
+                
+                # --- Theoretical DD Calculation Logic ---
+                theoretical_dd_series = [] # List of {Time, DD1, DD5, DD10, DD15, DD20}
+                if set_params and not df_at.empty:
+                    try:
+                        s_pipstep = float(set_params.get('PipStep', 0))
+                        s_pipstepexp = float(set_params.get('PipStepExponent', 1))
+                        s_maxpipstep = float(set_params.get('MaxPipStep', 0))
+                        s_lot = float(set_params.get('LotSize', 0))
+                        s_lotexp = float(set_params.get('LotSizeExponent', 1))
+                        s_maxlots = float(set_params.get('MaxLots', 999))
+                        s_ld = int(set_params.get('LiveDelay', 0))
+                        
+                        detected_point = None
+
+                        if s_pipstep != 0 and s_lot > 0:
+                            # Use Copy to avoid warnings
+                            df_at_theo = df_at.copy()
+                            df_at_theo['DateOnly'] = df_at_theo['Time'].dt.date
+                            last_calculated_pipstep = None
+                            
+                            unique_dates = sorted(df_at_theo['DateOnly'].unique())
+                            for d_date in unique_dates:
+                                day_deals = df_at_theo[df_at_theo['DateOnly'] == d_date]
+                                ins = day_deals[day_deals['Direction'].astype(str).str.lower() == 'in']
+                                if ins.empty: continue
+                                
+                                # Use SequenceNumber if available, otherwise just longest daily set of trades
+                                if 'SequenceNumber' in ins.columns:
+                                    seq_lengths = ins.groupby('SequenceNumber').size()
+                                    if seq_lengths.empty: continue
+                                    longest_seq_num = seq_lengths.idxmax()
+                                    longest_seq = day_deals[day_deals['SequenceNumber'] == longest_seq_num].sort_values('Time')
+                                else:
+                                    longest_seq = day_deals.sort_values('Time')
+                                
+                                p1_actual = longest_seq.iloc[0]['Price']
+                                # Heuristic for Point (Pip Size)
+                                # JPY pairs: 0.01 (whether 2 or 3 decimals)
+                                # Others: 0.0001 (whether 4 or 5 decimals)
+                                s_sym = str(longest_seq.iloc[0]['Symbol']).upper() if 'Symbol' in longest_seq.columns else ""
+                                if "JPY" in s_sym:
+                                    point = 0.01
+                                else:
+                                    # Default to 0.0001 for non-JPY majors/crosses
+                                    point = 0.0001
+                                
+                                if detected_point is None:
+                                    detected_point = point
+
+                                if s_pipstep < 0:
+                                    physical_ins = longest_seq[longest_seq['Direction'].astype(str).str.lower() == 'in']
+                                    if len(physical_ins) >= 2:
+                                        p1 = physical_ins.iloc[0]['Price']
+                                        p2 = physical_ins.iloc[1]['Price']
+                                        gap_pips = abs(p1 - p2) / point
+                                        # Logic fix: Use raw gap observed, normalize for LiveDelay
+                                        current_pipstep = gap_pips / (s_pipstepexp ** s_ld)
+                                        last_calculated_pipstep = current_pipstep
+                                    elif last_calculated_pipstep is not None:
+                                        current_pipstep = last_calculated_pipstep
+                                    else:
+                                        continue # Skip day if no calculation available
+                                else:
+                                    current_pipstep = s_pipstep
+                                
+                                if current_pipstep > 0:
+                                    # p1_actual already defined above
+                                    is_buy = str(longest_seq.iloc[0]['Type']).lower() == 'buy'
+                                    direction_sign = -1 if is_buy else 1 # Adverse move
+                                    
+                                    # point already detected above
+                                    
+                                    prices = [0.0] * 23
+                                    prices[min(s_ld + 1, 22)] = p1_actual
+                                    
+                                    # Forward/Backward Price Fill
+                                    for k in range(s_ld, 0, -1):
+                                        gap = min(s_maxpipstep, current_pipstep * (s_pipstepexp ** (k-1))) if s_maxpipstep > 0 else current_pipstep * (s_pipstepexp ** (k-1))
+                                        prices[k] = prices[k+1] - direction_sign * (gap * point)
+                                    for k in range(s_ld + 1, 22):
+                                        gap = min(s_maxpipstep, current_pipstep * (s_pipstepexp ** (k-1))) if s_maxpipstep > 0 else current_pipstep * (s_pipstepexp ** (k-1))
+                                        prices[k+1] = prices[k] + direction_sign * (gap * point)
+                                    
+                                    p21 = prices[21]
+                                    
+                                    def get_theo_lot(k):
+                                        return min(s_maxlots, s_lot * (s_lotexp ** (k-1)))
+                                    
+                                    vr = [0.0] * 22
+                                    vr[1] = sum(get_theo_lot(j) for j in range(1, s_ld + 2))
+                                    for i in range(2, 21):
+                                        vr[i] = get_theo_lot(s_ld + i)
+                                        
+                                    dds = {}
+                                    # New Definition: DD(N) is cumulative drawdown of active trades (1..N) at Level N+1
+                                    for i in range(1, 21):
+                                        target_price = prices[min(s_ld + i + 1, 22)]
+                                        total_dd_at_next_level = 0
+                                        for j in range(1, i + 1):
+                                            idx_p = min(s_ld + j, 22)
+                                            total_dd_at_next_level += vr[j] * abs(target_price - prices[idx_p])
+                                        
+                                        if i in [1, 5, 10, 13, 17, 20]:
+                                            dds[i] = total_dd_at_next_level
+                                    
+                                    # Calculate Gaps for summary table (distance from 1st ACTUAL trade)
+                                    # Trade 1 is level (s_ld + 1)
+                                    # PipGap 1 is distance to Level (s_ld + 2)
+                                    # PipGap 5 is distance to Level (s_ld + 6)
+                                    p_anchor = prices[min(s_ld + 1, 21)]
+                                    gap1 = abs(p_anchor - prices[min(s_ld + 2, 21)]) / point
+                                    gap5 = abs(p_anchor - prices[min(s_ld + 6, 21)]) / point
+                                    gap10 = abs(p_anchor - prices[min(s_ld + 11, 21)]) / point
+                                    gap13 = abs(p_anchor - prices[min(s_ld + 14, 21)]) / point
+                                    gap17 = abs(p_anchor - prices[min(s_ld + 18, 21)]) / point
+                                    gap20 = abs(p_anchor - prices[min(s_ld + 21, 21)]) / point
+                                    
+                                    # Identify symbol and apply USD conversion
+                                    rep_symbol = str(longest_seq.iloc[0]['Symbol']).upper() if 'Symbol' in longest_seq.columns else ""
+                                    fx_factor = get_usd_conv_factor(rep_symbol, d_date, all_fx_rates)
+                                    
+                                    multiplier = 100000 
+                                    theoretical_dd_series.append({
+                                        'Time': pd.to_datetime(longest_seq.iloc[0]['Time']),
+                                        'DD1': dds[1] * multiplier * fx_factor,
+                                        'DD5': dds[5] * multiplier * fx_factor,
+                                        'DD10': dds[10] * multiplier * fx_factor,
+                                        'DD13': dds[13] * multiplier * fx_factor,
+                                        'DD17': dds[17] * multiplier * fx_factor,
+                                        'DD20': dds[20] * multiplier * fx_factor,
+                                        'PipStepUsed': current_pipstep,
+                                        'Gap1': gap1,
+                                        'Gap5': gap5,
+                                        'Gap10': gap10,
+                                        'Gap13': gap13,
+                                        'Gap17': gap17,
+                                        'Gap20': gap20,
+                                        'Lot1': vr[1],
+                                        'Lot5': vr[5],
+                                        'Lot10': vr[10],
+                                        'Lot13': vr[13],
+                                        'Lot17': vr[17],
+                                        'Lot20': vr[20]
+                                    })
+                    except Exception as e:
+                        print(f"  Warning: Error in Theoretical DD calc for {report_basename}: {e}")
+                
                 # Convert set_params to numeric for calculations
                 s_lot = 0.0
                 s_exp = 1.0
@@ -587,6 +866,7 @@ def main():
                                 diff = abs(actual_vol - expected_vol)
                                 if diff >= 0.01: 
                                     all_discrepancies.append({
+                                        'TradeNo': i,
                                         'Time': row_val['Time'],
                                         'Theo': expected_vol,
                                         'Act': actual_vol,
@@ -604,11 +884,23 @@ def main():
                 df_at_sorted = df_at.sort_values('Time')
                 exits = df_at_sorted[df_at_sorted['Direction'].str.lower().isin(['out', 'in/out'])].copy()
                 
-                # Chart 2x3: Balance, Underwater, Histogram | Hold Times, Placeholder, Volumes
-                fig, axes = plt.subplots(2, 3, figsize=(20, 12))
-                ax_bal, ax_dd, ax_hist = axes[0]
-                ax_hold, ax_empty, ax_vol = axes[1]
-                ax_empty.set_axis_off()
+                # Chart 3x3: Balance, Underwater, Histogram | Hold Times, Volumes, Theoretical Drawdown | Seq/Month, Unused, Unused
+                fig, axes = plt.subplots(3, 3, figsize=(20, 18))
+                
+                # Flatten axes for easier assignment
+                ax_flat = axes.flatten()
+                ax_bal = ax_flat[0]
+                ax_dd = ax_flat[1]
+                ax_hist = ax_flat[2]
+                ax_hold = ax_flat[3]
+                ax_vol = ax_flat[4]
+                ax_theo_dd = ax_flat[5]
+                ax_seq_month = ax_flat[6]
+                ax_pnl_month = ax_flat[7]
+                
+                # Hide unused axes
+                for ax_u in ax_flat[8:]:
+                    ax_u.set_axis_off()
                 
                 max_dd_pct = 0.0
                 max_dd_abs = 0.0
@@ -800,16 +1092,124 @@ def main():
                         ax_hold.text(0.95, 0.05, stats_text, transform=ax_hold.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     else:
                         ax_hold.set_title("No Hold Time Data", fontsize=12)
-                else:
-                    ax_hist.set_title("No Sequence Columns Found", fontsize=12)
-                    ax_hold.set_title("No Sequence Columns Found", fontsize=12)
+                    # Plot 6: Theoretical Drawdown Over Time
+                    if theoretical_dd_series:
+                        df_theo = pd.DataFrame(theoretical_dd_series).sort_values('Time')
+                        ax_theo_dd.plot(df_theo['Time'], df_theo['DD1'], label='DD (1)', alpha=0.7)
+                        ax_theo_dd.plot(df_theo['Time'], df_theo['DD5'], label='DD (5)', alpha=0.7)
+                        ax_theo_dd.plot(df_theo['Time'], df_theo['DD10'], label='DD (10)', alpha=0.8)
+                        ax_theo_dd.plot(df_theo['Time'], df_theo['DD13'], label='DD (13)', alpha=0.9)
+                        ax_theo_dd.plot(df_theo['Time'], df_theo['DD17'], label='DD (17)', alpha=0.9)
+                        ax_theo_dd.plot(df_theo['Time'], df_theo['DD20'], label='DD (20)', linewidth=1.5)
+                        
+                        ax_theo_dd.set_title("Theoretical Max DD Over Time in USD (at 21st Trade)", fontsize=12)
+                        ax_theo_dd.set_ylabel("Amount (USD)")
+                        ax_theo_dd.grid(True, alpha=0.3)
+                        
+                        # Plot PipStep on secondary axis
+                        ax_pip = ax_theo_dd.twinx()
+                        ax_pip.step(df_theo['Time'], df_theo['PipStepUsed'], where='post', color='grey', linestyle='--', alpha=0.5, label='PipStep (Pips)')
+                        ax_pip.set_ylabel("PipStep (Pips)", color='grey')
+                        ax_pip.tick_params(axis='y', labelcolor='grey')
+                        
+                        # Combined Legend
+                        lines, labels = ax_theo_dd.get_legend_handles_labels()
+                        lines2, labels2 = ax_pip.get_legend_handles_labels()
+                        ax_theo_dd.legend(lines + lines2, labels + labels2, fontsize=8, loc='upper left')
+                        
+                        plt.setp(ax_theo_dd.get_xticklabels(), rotation=30, ha='right')
+                        ax_theo_dd.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+                    else:
+                        ax_theo_dd.set_title("No Theoretical DD Data", fontsize=12)
+                        ax_theo_dd.set_axis_off()
+
+                    # Plot 7: Sequences per Month
+                    if 'SequenceNumber' in df_at.columns:
+                        try:
+                            # Filter for valid sequences (TradeNumber 1 serves as a proxy for sequence start)
+                            df_seq_starts = df_at[
+                                (df_at['SequenceNumber'] > 0) & 
+                                (df_at['TradeNumberInSequence'] == 1) & 
+                                (df_at['Direction'].astype(str).str.lower() == 'in')
+                            ].copy()
+                            
+                            
+                            if not df_seq_starts.empty:
+                                # Create full range of months from calc_start to calc_end
+                                all_months = pd.period_range(start=calc_start, end=calc_end, freq='M')
+                                
+                                df_seq_starts['Month'] = df_seq_starts['Time'].dt.to_period('M')
+                                monthly_counts = df_seq_starts.groupby('Month').size()
+                                
+                                # Reindex to include all months, fill missing with 0
+                                monthly_counts = monthly_counts.reindex(all_months, fill_value=0)
+                                monthly_counts.index = monthly_counts.index.astype(str)
+                                
+                                monthly_counts.plot(kind='bar', ax=ax_seq_month, color='purple', alpha=0.6, edgecolor='black')
+                                ax_seq_month.set_title("Sequences per Month", fontsize=12)
+                                ax_seq_month.set_xlabel("Month")
+                                ax_seq_month.set_ylabel("Count")
+                                ax_seq_month.grid(axis='y', alpha=0.3)
+                                plt.setp(ax_seq_month.get_xticklabels(), rotation=45, ha='right')
+                                
+                                # Annotate bars
+                                for p in ax_seq_month.patches:
+                                    height = int(p.get_height())
+                                    ax_seq_month.annotate(f'{height}', (p.get_x() + p.get_width() / 2., height), 
+                                                          ha='center', va='bottom', fontsize=9)
+                            else:
+                                ax_seq_month.set_title("No Sequences Found", fontsize=12)
+                        except Exception as e:
+                            print(f"Error plotting Sequences per Month: {e}")
+                            ax_seq_month.set_title("Error Plotting Sequences", fontsize=12)
+                    else:
+                        ax_seq_month.set_title("No Sequence Data", fontsize=12)
+
+                    # Plot 8: PnL per Month
+                    if not df_at.empty:
+                        try:
+                            df_pnl_monthly = df_at[df_at['Direction'].astype(str).str.lower().isin(['out', 'in/out'])].copy()
+                            
+                            # Create full range of months from calc_start to calc_end
+                            all_months = pd.period_range(start=calc_start, end=calc_end, freq='M')
+                            
+                            df_pnl_monthly['Month'] = df_pnl_monthly['Time'].dt.to_period('M')
+                            monthly_pnl_sum = df_pnl_monthly.groupby('Month')['DealPnL'].sum()
+                            
+                            # Reindex to include all months, fill missing with 0
+                            monthly_pnl_sum = monthly_pnl_sum.reindex(all_months, fill_value=0.0)
+                            monthly_pnl_sum.index = monthly_pnl_sum.index.astype(str)
+                            
+                            # Define colors: Green for positive, Red for negative
+                            colors = ['green' if x >= 0 else 'red' for x in monthly_pnl_sum.values]
+                            
+                            monthly_pnl_sum.plot(kind='bar', ax=ax_pnl_month, color=colors, alpha=0.6, edgecolor='black')
+                            ax_pnl_month.set_title("PnL per Month", fontsize=12)
+                            ax_pnl_month.set_xlabel("Month")
+                            ax_pnl_month.set_ylabel("PnL")
+                            ax_pnl_month.grid(axis='y', alpha=0.3)
+                            plt.setp(ax_pnl_month.get_xticklabels(), rotation=45, ha='right')
+                            
+                            # Annotate bars
+                            for p in ax_pnl_month.patches:
+                                height = p.get_height()
+                                # Use a small offset depending on sign
+                                offset = 5 if height >= 0 else -15
+                                ax_pnl_month.annotate(f'{height:,.0f}', (p.get_x() + p.get_width() / 2., height), 
+                                                      xytext=(0, offset), textcoords='offset points',
+                                                      ha='center', va='bottom', fontsize=8)
+                        except Exception as e:
+                            print(f"Error plotting PnL per Month: {e}")
+                            ax_pnl_month.set_title("Error Plotting Monthly PnL", fontsize=12)
+                    else:
+                        ax_pnl_month.set_title("No Trade Data for PnL", fontsize=12)
                 
                 plt.tight_layout()
                 per_file_chart_path = os.path.join(charts_folder, f"Chart_{report_basename}.png")
                 plt.savefig(per_file_chart_path)
                 plt.close()
 
-                print(f"Processed: {report_basename} - {status}")
+                print(f"[{idx}/{len(all_reports_to_show)}] Processed: {report_basename} - {status}")
                 if total_pnl is not None:
                     print(f"  PnL: {total_pnl:,.2f}")
                     if max_dd_abs is not None:
@@ -819,32 +1219,55 @@ def main():
                 h_link = f"<a href='file:///{full_html_path}' target='_blank'>{report_basename}</a>" if full_html_path else report_basename
                 
                 f.write(f"<h3>{idx}. Report: {h_link}</h3>\n")
-                f.write(f"<ul>\n")
+                # Start 2-column metrics list
+                f.write(f"<ul class='metrics-list'>\n")
                 
-                # Status field should not be a hyperlink
+                # 1. Status
                 f.write(f"<li><strong>Status</strong>: <span class='{status_class}'>{status}</span> {'(' + reason + ')' if reason else ''}</li>\n")
+                
                 if total_pnl is not None:
+                    # 2. Data Source (moved up to be 2nd)
+                    data_source_str = "Parquet (Balance & Equity)" if df_parquet is not None else "HTML Trade Data (Approximated)"
+                    f.write(f"<li><strong>Data Source</strong>: {data_source_str}</li>\n")
+
+                    # 3. Total PnL
                     f.write(f"<li><strong>Total PnL</strong>: {total_pnl:,.2f}</li>\n")
-                    # Calculate Selected PnL (contribution to portfolio)
+                    
+                    # 4. Selected PnL
                     selected_pnl_val = 0.0
                     if not df_deals.empty and original_filename in df_deals['SourceFile'].values:
                         selected_pnl_val = df_deals[df_deals['SourceFile'] == original_filename]['DealPnL'].sum()
                     f.write(f"<li><strong>Selected PnL</strong>: {selected_pnl_val:,.2f}</li>\n")
+                    
+                    # 5. Profit Factor
+                    f.write(f"<li><strong>Profit Factor</strong>: {report_metrics.get('ProfitFactor', 'N/A')}</li>\n")
+                    
+                    # 6. Recovery Factor
+                    f.write(f"<li><strong>Recovery Factor</strong>: {report_metrics.get('RecoveryFactor', 'N/A')}</li>\n")
+
+                    # 7. Max Drawdown
                     if max_dd_abs is not None:
                         f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)</li>\n")
-                    if df_parquet is not None:
-                        f.write(f"<li><strong>Data Source</strong>: Parquet (Balance & Equity)</li>\n")
-                    
+                
+                f.write("</ul>\n")
+                
+                # Parameters & Validation in a standard list or its own section
+                if total_pnl is not None:
+                    f.write("<ul>\n") # Start standard list for the rest (Parameters, Discrepancies)
                     f.write("<li><strong>Parameters & Validation</strong>:\n")
                     f.write("<ul class='params-list'>\n")
                     if set_params:
                         f.write(f"<li>Lot Size: <code>{set_params['LotSize']}</code></li>\n")
-                        f.write(f"<li>Stop Loss: <code>{set_params['StopLoss']}</code></li>\n")
                         f.write(f"<li>Max Lots: <code>{set_params['MaxLots']}</code></li>\n")
                         f.write(f"<li>Lot Size Exponent: <code>{set_params['LotSizeExponent']}</code></li>\n")
                         f.write(f"<li>Max Orders: <code>{set_params['MaxOrders']}</code></li>\n")
+                        f.write(f"<li>Pip Step: <code>{set_params['PipStep']}</code></li>\n")
+                        f.write(f"<li>Pip Step Exponent: <code>{set_params['PipStepExponent']}</code></li>\n")
                         f.write(f"<li>Delay Trade Sequence: <code>{set_params['DelayTradeSequence']}</code></li>\n")
                         f.write(f"<li>Live Delay: <code>{set_params['LiveDelay']}</code></li>\n")
+                    
+                    if 'detected_point' in locals() and detected_point is not None:
+                        f.write(f"<li>Point Used: <code>{detected_point}</code></li>\n")
                     
                     f.write(f"<li>Initial LotSize (Report): <code>{initial_lot_size}</code></li>\n")
                     f.write(f"<li>Max Grid Level Reached: <code>{max_grid_level}</code></li>\n")
@@ -859,10 +1282,31 @@ def main():
                     if top_3_discrepancies:
                         f.write("<li><strong>Top 3 Lot Discrepancies</strong>:\n")
                         f.write("<table style='width: auto; margin: 10px 0;'>\n")
-                        f.write("<thead><tr><th>Entry Time</th><th>Theo Lot</th><th>Actual Lot</th><th>Diff</th></tr></thead>\n")
+                        f.write("<thead><tr><th>Trade #</th><th>Entry Time</th><th>Theo Lot</th><th>Actual Lot</th><th>Diff</th></tr></thead>\n")
                         f.write("<tbody>\n")
                         for d in top_3_discrepancies:
-                            f.write(f"<tr><td>{d['Time']}</td><td>{d['Theo']:.2f}</td><td>{d['Act']:.2f}</td><td>{d['Diff']:.2f}</td></tr>\n")
+                            f.write(f"<tr><td>{d['TradeNo']}</td><td>{d['Time']}</td><td>{d['Theo']:.2f}</td><td>{d['Act']:.2f}</td><td>{d['Diff']:.2f}</td></tr>\n")
+                        f.write("</tbody></table></li>\n")
+                    
+                    if theoretical_dd_series:
+                        f.write("<li><strong>Theoretical Max DD Summary in USD (Top 5 Days by DD20)</strong>:\n")
+                        f.write("<table style='width: auto; margin: 10px 0;'>\n")
+                        f.write("<thead><tr><th>Date</th><th>Lot1 / Gap 1</th><th>Lot5 / Gap 5</th><th>Lot10 / Gap 10</th><th>Lot13 / Gap 13</th><th>Lot17 / Gap 17</th><th>Lot20 / Gap 20</th><th>DD (1)</th><th>DD (5)</th><th>DD (10)</th><th>DD (13)</th><th>DD (17)</th><th>DD (20)</th></tr></thead>\n")
+                        f.write("<tbody>\n")
+                        # Show top 5 days or all? Let's show top 5 for brevity but mention it's top 5.
+                        # Or maybe just the absolute max DDs ever seen for each.
+                        sorted_theo = sorted(theoretical_dd_series, key=lambda x: x['DD20'], reverse=True)[:5]
+                        for d in sorted_theo:
+                            # Use .get() for safety and format correctly
+                            f.write(f"<tr><td>{d['Time'].date()}</td>")
+                            # Combined Lot / PipGap values
+                            f.write(f"<td>{d.get('Lot1', 0):.2f} / {d.get('Gap1', 0):,.2f}</td>")
+                            f.write(f"<td>{d.get('Lot5', 0):.2f} / {d.get('Gap5', 0):,.0f}</td>")
+                            f.write(f"<td>{d.get('Lot10', 0):.2f} / {d.get('Gap10', 0):,.0f}</td>")
+                            f.write(f"<td>{d.get('Lot13', 0):.2f} / {d.get('Gap13', 0):,.0f}</td>")
+                            f.write(f"<td>{d.get('Lot17', 0):.2f} / {d.get('Gap17', 0):,.0f}</td>")
+                            f.write(f"<td>{d.get('Lot20', 0):.2f} / {d.get('Gap20', 0):,.0f}</td>")
+                            f.write(f"<td>{d['DD1']:,.2f}</td><td>{d['DD5']:,.2f}</td><td>{d['DD10']:,.2f}</td><td>{d['DD13']:,.2f}</td><td>{d['DD17']:,.2f}</td><td>{d['DD20']:,.2f}</td></tr>\n")
                         f.write("</tbody></table></li>\n")
                     
                     f.write("</ul>\n")

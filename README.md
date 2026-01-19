@@ -3,6 +3,7 @@
 This project provides a 3-step workflow to analyze trading reports. Each analysis run is contained within a dedicated timestamped folder for better organization.
 
 ## Project Structure
+- `arrange.py`: (Step 0) Organizes a mess of files in a `Hunted/` folder into a structured `Hunted/arranged/` directory. This creates the parent directory used by subsequent scripts.
 - `list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list and a `sets/` folder.
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
@@ -44,10 +45,18 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 
 ## Step-by-Step Instructions
 
-### Step 1: Initialize Analysis
-Scan your **parent folder** (the one containing your `HTML Reports` subfolder) to create a new output directory. This step also automatically downloads historical daily FX closing prices for required symbols.
+### Step 0: Arrange Files
+Organize a raw `Hunted/` folder into a structured format. This script creates the `Hunted/arranged` directory, which serves as the **parent folder** for all subsequent steps.
 ```bash
-python list.py "C:/Path/To/ParentFolder"
+python arrange.py "C:/Path/To/DirectoryContainingHunted"
+```
+*   **Output**: Creates `Hunted/arranged/` with subfolders `HTML Reports`, `CSV`, and `Graphs`.
+*   **Next Step**: Use the newly created `arranged` folder path as the input for `list.py`.
+
+### Step 1: Initialize Analysis
+Scan your **parent folder** (e.g., `C:/Path/To/Directory/Hunted/arranged`) to create a new output directory. This step also automatically downloads historical daily FX closing prices for required symbols.
+```bash
+python list.py "C:/Path/To/Directory/Hunted/arranged"
 ```
 *   **Output**: 
     *   A new folder `analysis/output_YYYYMMDD_HHMMSS/` is created.

@@ -233,6 +233,11 @@ def main():
     point = 0.01 if "JPY" in symbol_str else 0.0001
     print(f"Symbol: {symbol_str} (Point: {point})")
 
+    # --- Skip Logic & ATR Scaling Pre-check ---
+    if s_maxpipstep < 0 and s_pipstep > 0:
+        print(f"\nSkipping Theoretical DD Calculation: MaxPipStep is negative ({s_maxpipstep}) while PipStep is positive ({s_pipstep}). ATR cannot be calculated.")
+        return
+
     # --- Global Pip Gap Calculation ---
     global_avg_gap = 0
     global_mean_pipstep = s_pipstep # Fallback
@@ -250,8 +255,9 @@ def main():
         
         if all_gaps:
             global_avg_gap = sum(all_gaps) / len(all_gaps)
-            global_mean_pipstep = global_avg_gap / (s_pipstepexp ** s_ld)
-            print(f"Global Mean Pip Gap: {global_avg_gap:.1f} (Normalized to PipStep: {global_mean_pipstep:.1f})")
+            # Remove normalization step: global_mean_pipstep = global_avg_gap / (s_pipstepexp ** s_ld)
+            global_mean_pipstep = global_avg_gap
+            print(f"Global Mean Pip Gap: {global_avg_gap:.1f} (Using as PipStep: {global_mean_pipstep:.1f})")
 
     # --- Date Selection: Auto-detect Max Gap Day if omitted ---
     if target_date is None:
@@ -274,11 +280,15 @@ def main():
                             s_group = s_group.sort_values('Time')
                             if len(s_group) >= 2:
                                 prics = s_group['Price'].values
-                                for i in range(len(prics) - 1):
-                                    day_gaps.append(abs(prics[i+1] - prics[i]) / point)
+                                # Requirement: use the gap between the first two trades
+                                day_gaps.append(abs(prics[1] - prics[0]) / point)
                     
                     if day_gaps:
-                        day_pipstep = (sum(day_gaps) / len(day_gaps)) / (s_pipstepexp ** s_ld)
+                        # Requirement: use the first available sequence's first gap on that day?
+                        # Or mean of "first gaps" of all sequences on that day?
+                        # "use the gap between the first two trades" implies first one.
+                        # Let's take the mean of "first gaps" of all sequences starting on that day for stability.
+                        day_pipstep = (sum(day_gaps) / len(day_gaps))
                 
                 if day_pipstep > max_day_pipstep:
                     max_day_pipstep = day_pipstep
@@ -317,9 +327,11 @@ def main():
                         all_day_gaps.append(abs(prics[i+1] - prics[i]) / point)
         
         if all_day_gaps:
+            # Use mean of the "first gaps" for sequences on this date
             mean_gap_date = sum(all_day_gaps) / len(all_day_gaps)
-            current_pipstep = mean_gap_date / (s_pipstepexp ** s_ld)
-            print(f"Calculated Mean Pip Gap for {target_date_str}: {mean_gap_date:.1f} (Normalized to PipStep: {current_pipstep:.1f})")
+            # Remove normalization
+            current_pipstep = mean_gap_date
+            print(f"Calculated Pip Step for {target_date_str} (Mean of first gaps): {mean_gap_date:.1f}")
         else:
             if global_avg_gap > 0:
                 current_pipstep = global_mean_pipstep
@@ -349,18 +361,26 @@ def main():
     # Calculate Gaps and Prices for both scenarios
     p_anchor = 1.0
     
+    # ATR-based MaxPipStep scaling
+    calculated_atr = current_pipstep / abs(s_pipstep) if s_pipstep != 0 else 1.0
+    effective_maxpipstep = calculated_atr * abs(s_maxpipstep) if s_maxpipstep < 0 else s_maxpipstep
+    
+    # Global ATR calculation for Mean scenario
+    global_atr = global_mean_pipstep / abs(s_pipstep) if s_pipstep != 0 else 1.0
+    effective_global_maxpipstep = global_atr * abs(s_maxpipstep) if s_maxpipstep < 0 else s_maxpipstep
+
     # Default scenario
     prices_def = [0.0] * 23
     prices_def[s_ld + 1] = p_anchor
     for k in range(s_ld + 1, 22):
-        gap = min(s_maxpipstep, current_pipstep * (s_pipstepexp ** (k-1))) if s_maxpipstep > 0 else current_pipstep * (s_pipstepexp ** (k-1))
+        gap = min(effective_maxpipstep, current_pipstep * (s_pipstepexp ** (k-1))) if effective_maxpipstep > 0 else current_pipstep * (s_pipstepexp ** (k-1))
         prices_def[k+1] = prices_def[k] + (gap * point)
 
     # Mean scenario
     prices_mean = [0.0] * 23
     prices_mean[s_ld + 1] = p_anchor
     for k in range(s_ld + 1, 22):
-        gap = min(s_maxpipstep, global_mean_pipstep * (s_pipstepexp ** (k-1))) if s_maxpipstep > 0 else global_mean_pipstep * (s_pipstepexp ** (k-1))
+        gap = min(effective_global_maxpipstep, global_mean_pipstep * (s_pipstepexp ** (k-1))) if effective_global_maxpipstep > 0 else global_mean_pipstep * (s_pipstepexp ** (k-1))
         prices_mean[k+1] = prices_mean[k] + (gap * point)
 
     # 7. Print Table
@@ -400,13 +420,107 @@ def main():
         if dd_usd_mean >= 1000:
             dd_usd_mean_str = f"{RED}{dd_usd_mean_str}{RESET}"
         
+        # --- Crossover Checks ---
+        # 1. Default Scenario Crossover
+        prev_dd_usd_def = 0
+        if i > 1:
+            prev_target_price_def = prices_def[min(s_ld + i, 22)]
+            prev_dd_def = 0
+            for j in range(1, i):
+                prev_dd_def += volumes[j] * abs(prev_target_price_def - prices_def[s_ld + j])
+            prev_dd_usd_def = prev_dd_def * multiplier * fx_factor
+        
+        if prev_dd_usd_def < 1000 <= dd_usd_def:
+            # Interpolate Gap
+            open_vol = sum(volumes[j] for j in range(1, i + 1))
+            needed_price_diff = (1000 - prev_dd_usd_def) / (open_vol * multiplier * fx_factor)
+            price_at_1k = prices_def[min(s_ld + i, 22)] + (needed_price_diff if prices_def[min(s_ld + i + 1, 22)] > prices_def[min(s_ld + i, 22)] else -needed_price_diff)
+            gap_at_1k = abs(price_at_1k - p_anchor) / point
+            print(f"{'---':<8} | {'---':<10} | {gap_at_1k:<12.1f} | {RED}{'$1,000.00':<13}{RESET} | {'---':<12} | {'---':<14} (Default Threshold)")
+
+        # 2. Mean Scenario Crossover
+        prev_dd_usd_mean = 0
+        if i > 1:
+            prev_target_price_mean = prices_mean[min(s_ld + i, 22)]
+            prev_dd_mean = 0
+            for j in range(1, i):
+                prev_dd_mean += volumes[j] * abs(prev_target_price_mean - prices_mean[s_ld + j])
+            prev_dd_usd_mean = prev_dd_mean * multiplier * fx_factor
+
+        if prev_dd_usd_mean < 1000 <= dd_usd_mean:
+            # Interpolate Gap
+            open_vol = sum(volumes[j] for j in range(1, i + 1))
+            needed_price_diff = (1000 - prev_dd_usd_mean) / (open_vol * multiplier * fx_factor)
+            price_at_1k = prices_mean[min(s_ld + i, 22)] + (needed_price_diff if prices_mean[min(s_ld + i + 1, 22)] > prices_mean[min(s_ld + i, 22)] else -needed_price_diff)
+            gap_at_1k = abs(price_at_1k - p_anchor) / point
+            print(f"{'---':<8} | {'---':<10} | {'---':<12} | {'---':<14} | {gap_at_1k:<12.1f} | {RED}{'$1,000.00':<13}{RESET} (Mean Threshold)")
+
         line = f"{i:<8} | {volumes[i]:<10.2f} | {gap_pips_def:<12.1f} | {dd_usd_def_str} | {gap_pips_mean:<12.1f} | {dd_usd_mean_str}"
         print(line)
 
     print("="*110)
+    
+    # --- 8. Pip Gap vs Starting Lot Analysis (Horizontal Table) ---
+    print(f"1k Drawdown Threshold vs. Starting Lot (Pips) - Based on {target_date_str}:")
+    target_lots = [0.01, 0.02, 0.03, 0.04, 0.05]
+    results_1k = {}
+    
+    for start_lot in target_lots:
+        # Simulate volumes for this start_lot
+        sim_volumes = [0.0] * 22
+        def get_sim_lot(k):
+            return min(s_max_lot, start_lot * (s_lotexp ** (k-1)))
+        
+        sim_volumes[1] = sum(get_sim_lot(j) for j in range(1, s_ld + 2))
+        for j in range(2, 21):
+            sim_volumes[j] = get_sim_lot(s_ld + j)
+            
+        # Use existing prices_def (which used current_pipstep)
+        k1_gap = "N/A"
+        total_lots_at_1k = "N/A"
+        level_at_1k = "N/A"
+        last_dd_usd = 0
+        last_gap_pips = 0
+        
+        for i in range(1, 21):
+            t_price = prices_def[min(s_ld + i + 1, 22)]
+            dd_val = 0
+            open_lots = 0
+            for j in range(1, i + 1):
+                dd_val += sim_volumes[j] * abs(t_price - prices_def[s_ld + j])
+                open_lots += sim_volumes[j]
+            dd_usd = dd_val * multiplier * fx_factor
+            gap_pips = abs(t_price - p_anchor) / point
+            
+            if last_dd_usd < 1000 <= dd_usd:
+                # Interpolate Gap
+                if dd_usd > last_dd_usd:
+                    gap_val = last_gap_pips + (gap_pips - last_gap_pips) * (1000 - last_dd_usd) / (dd_usd - last_dd_usd)
+                    k1_gap = f"{gap_val:.1f}"
+                    total_lots_at_1k = f"{open_lots:.2f}"
+                    level_at_1k = f"L{i}-{i+1}"
+                break
+            last_dd_usd = dd_usd
+            last_gap_pips = gap_pips
+        
+        results_1k[start_lot] = {'gap': k1_gap, 'lots': total_lots_at_1k, 'level': level_at_1k}
+
+    # Print Horizontal Table
+    header_row = " | ".join([f"{lot:<10}" for lot in target_lots])
+    gap_row    = " | ".join([f"{results_1k[lot]['gap']:<10}" for lot in target_lots])
+    lots_row   = " | ".join([f"{results_1k[lot]['lots']:<10}" for lot in target_lots])
+    level_row  = " | ".join([f"{results_1k[lot]['level']:<10}" for lot in target_lots])
+    
+    print(f"{'Lot Size':<12} | {header_row}")
+    print("-" * (15 + len(header_row)))
+    print(f"{'1k Pip Gap':<12} | {gap_row}")
+    print(f"{'Total Lots':<12} | {lots_row}")
+    print(f"{'Trade Level':<12} | {level_row}")
+    print("="*110)
+
     print(f"Settings Used:")
     print(f" - LotSize: {s_lot}, Exponent: {s_lotexp}, Max: {s_max_lot}")
-    print(f" - PipStep: {current_pipstep:.2f}, Exponent: {s_pipstepexp}, Max: {s_maxpipstep}")
+    print(f" - PipStep: {current_pipstep:.2f}, Exponent: {s_pipstepexp}, Max: {effective_maxpipstep:.2f} (Input: {s_maxpipstep})")
     print(f" - LiveDelay: {s_ld}")
     print(f" - USD Conversion Factor: {fx_factor:.4f} (Symbol: {symbol_str})")
 

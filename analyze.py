@@ -698,11 +698,11 @@ def main():
                         seq_groups_tmp = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')
                         for _, group in seq_groups_tmp:
                             in_trades = group[group['Direction'].astype(str).str.lower() == 'in'].sort_values('Time')
-                            if len(in_trades) > 1:
+                            if len(in_trades) >= 2:
                                 prices_tmp = in_trades['Price'].values
-                                for i in range(len(prices_tmp) - 1):
-                                    gap_tmp = abs(prices_tmp[i+1] - prices_tmp[i]) / detected_point
-                                    pip_gaps.append(gap_tmp)
+                                # Fix: Only use the gap between Trade 1 and Trade 2 for the 'base' gap calculation
+                                gap_tmp = abs(prices_tmp[1] - prices_tmp[0]) / detected_point
+                                pip_gaps.append(gap_tmp)
                 
                 global_avg_gap = np.mean(pip_gaps) if pip_gaps else 0
 
@@ -755,14 +755,17 @@ def main():
                                     # Calculate mean pip gap across all sequences on this day
                                     all_day_gaps = []
                                     if 'SequenceNumber' in ins.columns:
-                                        for _, s_group in ins.groupby('SequenceNumber'):
-                                            s_group = s_group.sort_values('Time')
-                                            if len(s_group) >= 2:
-                                                prices = s_group['Price'].values
+                                        for seq_num in ins['SequenceNumber'].unique():
+                                            # Fix: Look up Trade 1 and 2 in the full history for this report, not just today
+                                            full_s_group = df_at_theo[(df_at_theo['SequenceNumber'] == seq_num) & 
+                                                                     (df_at_theo['Direction'].astype(str).str.lower() == 'in')].sort_values('Time')
+                                            if len(full_s_group) >= 2:
+                                                prices = full_s_group['Price'].values
                                                 gap = abs(prices[1] - prices[0]) / point
                                                 all_day_gaps.append(gap)
                                     else:
                                         # Fallback if no SequenceNumber
+                                        # (Not recommended for accurate ATR calculation if sequences span days)
                                         s_group = ins.sort_values('Time')
                                         if len(s_group) >= 2:
                                             prices = s_group['Price'].values
@@ -1512,19 +1515,32 @@ def main():
                         if not df_theo_all.empty:
                             # Round PipStepUsed to avoid tiny differences if any
                             df_theo_all['PipStepUsed'] = df_theo_all['PipStepUsed'].round(2)
-                            top_distinct = df_theo_all.sort_values('DD20', ascending=False).groupby('PipStepUsed').head(1).sort_values('PipStepUsed', ascending=False).head(2)
                             
-                            max_pipstep_info = f" | MaxPipStep (Effective): {theoretical_dd_series[0]['EffectiveMaxPipStep']:.2f}" if theoretical_dd_series else ""
-                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (Top 2 Distinct Pip Gaps) {max_pipstep_info}</strong>:\n")
+                            # Distinct PipSteps sorted by value
+                            # We take the best (max DD20) entry for each unique PipStepUsed
+                            distinct_pipsteps = df_theo_all.sort_values('DD20', ascending=False).groupby('PipStepUsed').head(1).sort_values('PipStepUsed', ascending=False)
+                            
+                            top_distinct = distinct_pipsteps.head(2)
+                            bottom_distinct = distinct_pipsteps.tail(2)
+                            
+                            # Combine items, ensuring we don't duplicate if there are < 4 distinct pipsteps
+                            combined_distinct = pd.concat([top_distinct, bottom_distinct]).drop_duplicates(subset=['PipStepUsed'])
+                            # Keep it sorted by PipStepUsed descending
+                            combined_distinct = combined_distinct.sort_values('PipStepUsed', ascending=False)
+
+                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (Max 2 & Min 2 Distinct Pip Gaps)</strong>:\n")
                             f.write("<div style='overflow-x: auto;'>\n")
                             f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n")
                             # Headers will be generated per scenario below
                             
                             # Prepare scenario rows
                             scenario_rows = []
-                            for _, d_row in top_distinct.iterrows():
+                            for _, d_row in combined_distinct.iterrows():
+                                # Check if it's in the top 2 or bottom 2 to label correctly
+                                is_max = d_row['PipStepUsed'] in top_distinct['PipStepUsed'].values
+                                prefix = "Max Distinct Gap" if is_max else "Min Distinct Gap"
                                 scenario_rows.append({
-                                    'Label': f"Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
+                                    'Label': f"{prefix} | Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
                                     'Data': d_row
                                 })
                             

@@ -7,6 +7,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 - `list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list and a `sets/` folder.
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
+- `simulate.py`: Parses the analysis results to create a simplified lot-scaling simulation summary (`sim.html`).
 - `dd.py`: (Utility) Theoretical Drawdown Calculator for analyzing specific reports/days with sensitivity overrides and comparison against mean pip gaps.
 - `export.py`: (Optional) Extracts and organizes key files (`.set`, `.htm`, `.parquet`) for reports identified in the final analysis.
 - `sets2csv.py`: (Utility) Converts a folder of `.set` or `.chr` files into a single `all_sets_<ext>_<timestamp>.csv` with all parameters.
@@ -25,6 +26,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 │       ├── prices/                    <-- Created in Step 1 (FX Data)
 │       ├── Portfolio_Overview.png     <-- Created in Step 3
 │       ├── Full_Analysis.html         <-- Created in Step 3
+│       ├── sim.html                   <-- Created in Step 5
 │       ├── charts/                    <-- Created in Step 3
 │       ├── sets/                      <-- Created in Step 1 (Copy of *.set)
 │       ├── Trades/                    <-- Created in Step 2
@@ -84,6 +86,18 @@ Extract and organize relevant files for a focused review of the contributors.
 python export.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ```
 *   **Output**: Creates a `selected/` folder **inside** your output directory with `CSV`, `HTML`, and `sets` subfolders. Each `.set` file is assigned a unique, incremental magic number.
+ 
+### Step 5: Simulation Summary
+Generates a consolidated summary report (`sim.html`) showing simulated performance across various fixed lot sizes (0.01 to 0.05).
+```bash
+python simulate.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
+```
+*   **Output**: Saves `sim.html` inside your output directory and automatically opens it in the browser.
+*   **Key Metrics**:
+    *   **Max Trades (Seq)**: Shows the longest trade sequence reached, including the start date of that sequence.
+    *   **Pip Gap (Max Seq)**: Captures the theoretical "Base Pip Gap" from the analysis for the worst-case scenario.
+    *   **Lot Simulations**: Scales PnL and MaxDD linearly for lot sizes 0.01, 0.02, 0.03, 0.04, and 0.05.
+    *   **Clickable Links**: Report filenames in the table are clickable links that open the original individual HTML reports.
 
 ## Utility Scripts
 

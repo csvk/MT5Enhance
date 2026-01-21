@@ -615,6 +615,9 @@ def main():
                 initial_lot_size = "N/A"
                 max_grid_level = "N/A"
                 lot_validation_status = "N/A"
+                max_trades_val = None
+                max_trades_gap = None
+                max_trades_date = None
                 top_3_discrepancies = []
                 
                 atf = os.path.join(trades_folder, f"all_trades_{report_basename}.csv")
@@ -1154,7 +1157,19 @@ def main():
                         group_sorted = group.sort_values('Time')
                         length = group_sorted['TradeNumberInSequence'].max()
                         pnl = group_sorted[group_sorted['Direction'].astype(str).str.lower().isin(['out', 'in/out'])]['DealPnL'].sum()
-                        seq_data.append({'Length': length, 'PnL': pnl})
+                        
+                        # Pip Gap calculation: First in entry price to last in entry price
+                        in_trades = group_sorted[group_sorted['Direction'].astype(str).str.lower() == 'in']
+                        if not in_trades.empty:
+                            p1 = in_trades.iloc[0]['Price']
+                            pN = in_trades.iloc[-1]['Price']
+                            cumulative_gap = abs(pN - p1) / (detected_point if detected_point else 0.0001)
+                        else:
+                            cumulative_gap = 0.0
+                        
+                        start_time = group_sorted.iloc[0]['Time']
+                            
+                        seq_data.append({'Length': length, 'PnL': pnl, 'ActualGap': cumulative_gap, 'StartTime': start_time})
                         
                         # Hold time calculation: First in to first out
                         first_in = group[(group['TradeNumberInSequence'] == 1) & (group['Direction'].astype(str).str.lower() == 'in')]
@@ -1168,10 +1183,23 @@ def main():
                     
                     if seq_data:
                         df_seq_curr = pd.DataFrame(seq_data)
+                        max_trades_val = int(df_seq_curr['Length'].max()) if not df_seq_curr.empty else 0
+                        
+                        # Find gap and date at max trades
+                        if max_trades_val > 0:
+                            max_df = df_seq_curr[df_seq_curr['Length'] == max_trades_val]
+                            max_trades_gap = max_df['ActualGap'].max()
+                            # Use the first sequence if more than one has max length
+                            max_trades_date = pd.to_datetime(max_df.iloc[0]['StartTime']).date()
+                        else:
+                            max_trades_gap = 0.0
+                            max_trades_date = None
+                            
                         dist_agg_curr = df_seq_curr.groupby('Length').agg(
                             Frequency=('PnL', 'count'),
                             TotalPnL=('PnL', 'sum')
                         ).reset_index()
+                        dist_agg_curr['Length'] = dist_agg_curr['Length'].astype(int)
                         
                         x_dist = np.arange(len(dist_agg_curr))
                         width_dist = 0.35
@@ -1425,6 +1453,15 @@ def main():
                     # 7. Max Drawdown
                     if max_dd_abs is not None:
                         f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%) [{max_dd_time}]</li>\n")
+
+                    # 8. Max Trades in Sequence
+                    if 'max_trades_val' in locals() and max_trades_val is not None:
+                        date_str = f" [{max_trades_date}]" if 'max_trades_date' in locals() and max_trades_date else ""
+                        f.write(f"<li><strong>Max Trades in Sequence</strong>: {max_trades_val}{date_str}</li>\n")
+                    
+                    # 9. Pip Gap at Max Trades
+                    if 'max_trades_gap' in locals() and max_trades_gap is not None:
+                        f.write(f"<li><strong>Pip Gap at Max Trades</strong>: {max_trades_gap:.1f}</li>\n")
 
                 
                 f.write("</ul>\n")

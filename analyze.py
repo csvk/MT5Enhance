@@ -123,6 +123,14 @@ def main():
         portfolio_max_dd_abs = (portfolio['Balance'] - portfolio['PeakBalance']).min()
         portfolio_max_dd_abs_time = (portfolio['Balance'] - portfolio['PeakBalance']).idxmin()
 
+    # Calculate Portfolio-wide Buy/Sell Trade Counts
+    total_portfolio_buy_trades = 0
+    total_portfolio_sell_trades = 0
+    if not df_deals.empty:
+        in_deals_portfolio = df_deals[df_deals['Direction'].astype(str).str.lower().isin(['in', 'in/out'])]
+        total_portfolio_buy_trades = len(in_deals_portfolio[in_deals_portfolio['Type'].astype(str).str.lower() == 'buy'])
+        total_portfolio_sell_trades = len(in_deals_portfolio[in_deals_portfolio['Type'].astype(str).str.lower() == 'sell'])
+
 
     # 7. Charting
     overview_chart_path = os.path.join(charts_folder, "Portfolio_Overview.png")
@@ -215,9 +223,14 @@ def main():
 
         months_headers = [str(m) for m in pivot_table.columns]
         
+        # Calculate Buy/Sell counts for all selected trades per file
+        in_deals_all = df_deals[df_deals['Direction'].astype(str).str.lower().isin(['in', 'in/out'])].copy()
+        in_deals_all['Type_lower'] = in_deals_all['Type'].astype(str).str.lower()
+        file_counts = in_deals_all.groupby(['Symbol', 'SourceFile', 'Type_lower']).size().unstack(fill_value=0)
+        
         table_html = "## Monthly Contributor Breakdown\n\n"
         table_html += "<table>\n<thead>\n<tr>"
-        table_html += "<th>S.No</th><th>Symbol</th><th>Report File</th>" + "".join([f"<th>{m}</th>" for m in months_headers]) + "<th>Total</th>"
+        table_html += "<th>S.No</th><th>Symbol</th><th>Report File</th><th>Buy Trades</th><th>Sell Trades</th>" + "".join([f"<th>{m}</th>" for m in months_headers]) + "<th>Total</th>"
         table_html += "</tr>\n</thead>\n<tbody>\n"
         
         for i, ((symbol, file_name), row) in enumerate(pivot_table.iterrows(), 1):
@@ -225,10 +238,16 @@ def main():
             full_path = html_path_map.get(file_name, "")
             file_link = f"<a href='file:///{full_path}' target='_blank'><code>{file_name}</code></a>" if full_path else f"<code>{file_name}</code>"
             
+            # Get buy/sell counts
+            buy_count = file_counts.loc[(symbol, file_name), 'buy'] if (symbol, file_name) in file_counts.index and 'buy' in file_counts.columns else 0
+            sell_count = file_counts.loc[(symbol, file_name), 'sell'] if (symbol, file_name) in file_counts.index and 'sell' in file_counts.columns else 0
+
             table_html += "<tr>"
             table_html += f"<td>{i}</td>"
             table_html += f"<td>{symbol}</td>"
             table_html += f"<td>{file_link}</td>"
+            table_html += f"<td style='text-align:right;'>{buy_count}</td>"
+            table_html += f"<td style='text-align:right;'>{sell_count}</td>"
             for val in row:
                 color = get_color(val, global_min, global_max)
                 table_html += f'<td style="background-color:{color}; color:black; text-align:right;">{val:.2f}</td>'
@@ -243,6 +262,8 @@ def main():
         grand_total = monthly_totals.sum()
         table_html += "<tr>"
         table_html += "<td colspan='3'><b>Total</b></td>"
+        table_html += f"<td style='text-align:right;'><b>{total_portfolio_buy_trades}</b></td>"
+        table_html += f"<td style='text-align:right;'><b>{total_portfolio_sell_trades}</b></td>"
         for val in monthly_totals:
             color = get_color(val, monthly_totals.min(), monthly_totals.max())
             table_html += f'<td style="background-color:{color}; color:black; text-align:right;"><b>{val:.2f}</b></td>'
@@ -618,6 +639,7 @@ def main():
         if not portfolio.empty:
             f.write(f"<p><strong>Max Drawdown:</strong> {portfolio_max_dd_abs:,.2f} ({portfolio_max_dd_pct:.2f}%) [{portfolio_max_dd_time}]</p>\n")
         
+        f.write(f"<p><strong>Total Trades:</strong> {total_portfolio_buy_trades + total_portfolio_sell_trades} (Buy: {total_portfolio_buy_trades}, Sell: {total_portfolio_sell_trades})</p>\n")
         f.write("</div>\n")
 
         
@@ -740,6 +762,7 @@ def main():
                     continue
 
                 df_at = pd.read_csv(atf)
+                df_at['Time'] = pd.to_datetime(df_at['Time'])
                 
                 # EXTRACT INITIAL LOT SIZE
                 first_in_deal = df_at[df_at['Direction'].astype(str).str.lower() == 'in']
@@ -751,6 +774,15 @@ def main():
                 
                 df_at['DealPnL'] = df_at['Profit'] + df_at['Commission'] + df_at['Swap']
                 total_pnl = df_pnl_only['Profit'].sum() + df_pnl_only['Commission'].sum() + df_pnl_only['Swap'].sum()
+                
+                # Count buy and sell trades opened (Direction 'in' or 'in/out')
+                df_at['Type_lower'] = df_at['Type'].astype(str).str.lower()
+                df_at['Dir_lower'] = df_at['Direction'].astype(str).str.lower()
+                # Use filtered data if it exists, otherwise use all data
+                df_at_filt_cnt = df_at[(df_at['Time'] >= calc_start) & (df_at['Time'] < calc_end)] if not df_at.empty else df_at
+                in_deals_file = df_at_filt_cnt[df_at_filt_cnt['Dir_lower'].isin(['in', 'in/out'])]
+                total_buy_trades = len(in_deals_file[in_deals_file['Type_lower'] == 'buy'])
+                total_sell_trades = len(in_deals_file[in_deals_file['Type_lower'] == 'sell'])
                 
                 # Determine Status
                 status = "Unknown"
@@ -1589,6 +1621,10 @@ def main():
                     # 9. Pip Gap at Max Trades
                     if 'max_trades_gap' in locals() and max_trades_gap is not None:
                         f.write(f"<li><strong>Pip Gap at Max Trades</strong>: {max_trades_gap:.1f}</li>\n")
+
+                    # 10. Buy/Sell Counts
+                    f.write(f"<li><strong>Buy Trades</strong>: {total_buy_trades}</li>\n")
+                    f.write(f"<li><strong>Sell Trades</strong>: {total_sell_trades}</li>\n")
 
                 
                 f.write("</ul>\n")

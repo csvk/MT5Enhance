@@ -8,6 +8,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
 - `simulate.py`: Parses the analysis results to create a simplified lot-scaling simulation summary (`sim.html`).
+- `compare.py`: Automatically detects and groups strategy variants (e.g., `_t18`, `_ld1`) from `Short_Analysis.html` to produce a side-by-side comparison report (`compare_report.html`).
 - `dd.py`: (Utility) Theoretical Drawdown Calculator for analyzing specific reports/days with sensitivity overrides and comparison against mean pip gaps.
 - `export.py`: (Optional) Extracts and organizes key files (`.set`, `.htm`, `.parquet`) for reports identified in the final analysis.
 - `ldsets.py`: (Utility) Creates `LiveDelay` variations of set files based on "Max Trades in Sequence" results.
@@ -29,6 +30,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 │       ├── prices/                    <-- Created in Step 1 (FX Data)
 │       ├── Full_Analysis.html         <-- Created in Step 3
 │       ├── Short_Analysis.html        <-- Created in Step 3
+│       ├── compare_report.html        <-- Created in Step 6
 │       ├── sim.html                   <-- Created in Step 5
 │       ├── charts/                    <-- Created in Step 3
 │       ├── sets/                      <-- Created in Step 1 (Copy of *.set)
@@ -104,6 +106,17 @@ python simulate.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
     *   **Pip Gap (Max Seq)**: Captures the theoretical "Base Pip Gap" from the analysis for the worst-case scenario.
     *   **Lot Simulations**: Scales PnL and MaxDD linearly for lot sizes 0.01, 0.02, 0.03, 0.04, and 0.05.
     *   **Clickable Links**: Report filenames in the table are clickable links that open the original individual HTML reports.
++
++### Step 6: Variant Comparison
++Automatically groups and compares strategy variations (e.g., different `LiveDelay` or `Timeframe` variants of the same base strategy) found in the `Short_Analysis.html` report.
++```bash
++python compare.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
++```
++*   **Output**: Saves `compare_report.html` inside your output directory and automatically opens it in the browser.
++*   **Key Features**:
++    *   **Auto-Detection**: Dynamically finds suffixes like `_ld1`, `_ld2`, `_t18`, etc., to identify variants.
++    *   **Smart Filtering**: Only includes strategies that actually have variants, keeping the report focused.
++    *   **Side-by-Side Comparison**: Displays PnL, Drawdown, Recovery Factor, and Trade Counts for each variant in a clean, comparative table.
 
 ## Utility Scripts
 

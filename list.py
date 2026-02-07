@@ -37,14 +37,25 @@ def generate_file_list():
         return
 
     # Prepare data for CSV
+    # First, collect all basenames for lookups
+    all_basenames = {os.path.basename(f) for f in htm_files}
+    
     data = []
     for f in htm_files:
         basename = os.path.basename(f)
-        # Set Include=0 for _ld variation patterns (e.g., *_ld1.htm)
         include_val = 1
-        if re.search(r'_ld\d+', basename, re.IGNORECASE):
-            include_val = 0
+        
+        # Check if it's an _ld variation
+        match = re.search(r'(_ld\d+)', basename, re.IGNORECASE)
+        if match:
+            # Construct the potential base filename by removing the _ld suffix
+            suffix = match.group(1)
+            base_name = basename.replace(suffix, "")
             
+            # Look for the base file in the set of discovered reports
+            if base_name in all_basenames:
+                include_val = 0
+                
         data.append({
             'FilePath': os.path.abspath(f),
             'Include': include_val

@@ -176,7 +176,6 @@ def main():
     else:
         # Create a placeholder or just don't save. Later code will check for file existence.
         print("Skipping Portfolio Overview chart as portfolio is empty.")
-
     # 8. Pre-load report list for metadata and hyperlinks
     report_list_path = os.path.join(output_dir, "report_list.csv")
     html_path_map = {}
@@ -186,6 +185,30 @@ def main():
             for _, row in df_list_tmp.iterrows():
                 html_path_map[os.path.basename(row['FilePath'])] = row['FilePath']
         except: pass
+
+    # --- Pre-calculate inclusion metadata for reports ---
+    num_included = df_deals['SourceFile'].nunique() if not df_deals.empty else 0
+    num_total = "Unknown"
+    explicitly_skipped = []
+    overlapping_skipped = []
+    
+    if os.path.exists(report_list_path):
+        try:
+            df_list = pd.read_csv(report_list_path)
+            num_total = len(df_list)
+            
+            # Categorize skipped files
+            actually_included = set(df_deals['SourceFile'].unique()) if not df_deals.empty else set()
+            
+            explicitly_excluded_paths = df_list[df_list['Include'] == 0]['FilePath']
+            explicitly_skipped = sorted([os.path.basename(f) for f in explicitly_excluded_paths])
+            
+            potentially_included_paths = df_list[df_list['Include'] == 1]['FilePath']
+            potentially_included = set(os.path.basename(f) for f in potentially_included_paths)
+            
+            overlapping_skipped = sorted(list(potentially_included - actually_included))
+        except:
+            pass
 
     # 8. Consolidated Monthly Contributor Table (with Gradient Color Coding)
     if not df_deals.empty:
@@ -271,8 +294,58 @@ def main():
         gt_color = get_color(grand_total, pivot_table.values.sum(), pivot_table.values.sum())
         table_html += f'<td style="background-color:{gt_color}; color:black; text-align:right;"><b>{grand_total:.2f}</b></td>'
         table_html += "</tr>\n</tbody>\n</table>\n\n"
+
+        # --- New: Monthly Currency Breakdown Table ---
+        # Group by Symbol and Month for currency level aggregation
+        currency_monthly_pnl = df_deals.groupby(['Symbol', 'Month'])['DealPnL'].sum().reset_index()
+        currency_pivot = currency_monthly_pnl.pivot(index='Symbol', columns='Month', values='DealPnL').fillna(0)
+        
+        # Get report file count per symbol
+        symbol_report_counts = df_deals.groupby('Symbol')['SourceFile'].nunique()
+        
+        # Aggregate Buy/Sell counts per symbol
+        symbol_counts = in_deals_all.groupby(['Symbol', 'Type_lower']).size().unstack(fill_value=0)
+        
+        currency_table_html = "<h2>Monthly Currency Breakdown</h2>\n"
+        currency_table_html += "<table>\n<thead>\n<tr>"
+        currency_table_html += "<th>S.No</th><th>Symbol</th><th>Report File Count</th><th>Buy Trades</th><th>Sell Trades</th>" + "".join([f"<th>{m}</th>" for m in months_headers]) + "<th>Total</th>"
+        currency_table_html += "</tr>\n</thead>\n<tbody>\n"
+        
+        for i, (symbol, row) in enumerate(currency_pivot.iterrows(), 1):
+            report_count = symbol_report_counts.get(symbol, 0)
+            buy_count = symbol_counts.loc[symbol, 'buy'] if symbol in symbol_counts.index and 'buy' in symbol_counts.columns else 0
+            sell_count = symbol_counts.loc[symbol, 'sell'] if symbol in symbol_counts.index and 'sell' in symbol_counts.columns else 0
+
+            currency_table_html += "<tr>"
+            currency_table_html += f"<td>{i}</td>"
+            currency_table_html += f"<td>{symbol}</td>"
+            currency_table_html += f"<td style='text-align:right;'>{report_count}</td>"
+            currency_table_html += f"<td style='text-align:right;'>{buy_count}</td>"
+            currency_table_html += f"<td style='text-align:right;'>{sell_count}</td>"
+            for val in row:
+                color = get_color(val, global_min, global_max)
+                currency_table_html += f'<td style="background-color:{color}; color:black; text-align:right;">{val:.2f}</td>'
+            
+            total_pnl_val = row.sum()
+            total_color = get_color(total_pnl_val, currency_pivot.sum(axis=1).min(), currency_pivot.sum(axis=1).max())
+            currency_table_html += f'<td style="background-color:{total_color}; color:black; text-align:right;"><b>{total_pnl_val:.2f}</b></td>'
+            currency_table_html += "</tr>\n"
+        
+        # Total row for Currency Table
+        currency_table_html += "<tr>"
+        currency_table_html += "<td colspan='2'><b>Total</b></td>"
+        currency_table_html += f"<td style='text-align:right;'><b>{num_included}</b></td>"
+        currency_table_html += f"<td style='text-align:right;'><b>{total_portfolio_buy_trades}</b></td>"
+        currency_table_html += f"<td style='text-align:right;'><b>{total_portfolio_sell_trades}</b></td>"
+        for val in monthly_totals:
+            color = get_color(val, monthly_totals.min(), monthly_totals.max())
+            currency_table_html += f'<td style="background-color:{color}; color:black; text-align:right;"><b>{val:.2f}</b></td>'
+        
+        currency_table_html += f'<td style="background-color:{gt_color}; color:black; text-align:right;"><b>{grand_total:.2f}</b></td>'
+        currency_table_html += "</tr>\n</tbody>\n</table>\n\n"
     else:
         table_html = "No trades included in the aggregate portfolio for the specified period.\n\n"
+        currency_table_html = ""
 
     # --- Helper Functions ---
     def load_parquet_data(html_file_path):
@@ -564,31 +637,6 @@ def main():
             portfolio_max_dd_pct = (portfolio_max_dd_abs / args.base) * 100 if args.base != 0 else 0
 
     # 9. Compile HTML Report
-    num_included = df_deals['SourceFile'].nunique()
-    
-    # Try to find the total number of files and skipped files from report_list.csv
-    num_total = "Unknown"
-    explicitly_skipped = []
-    overlapping_skipped = []
-    
-    if os.path.exists(report_list_path):
-        try:
-            df_list = pd.read_csv(report_list_path)
-            num_total = len(df_list)
-            
-            # Categorize skipped files
-            actually_included = set(df_deals['SourceFile'].unique()) if not df_deals.empty else set()
-            
-            explicitly_excluded_paths = df_list[df_list['Include'] == 0]['FilePath']
-            explicitly_skipped = sorted([os.path.basename(f) for f in explicitly_excluded_paths])
-            
-            potentially_included_paths = df_list[df_list['Include'] == 1]['FilePath']
-            potentially_included = set(os.path.basename(f) for f in potentially_included_paths)
-            
-            overlapping_skipped = sorted(list(potentially_included - actually_included))
-        except:
-            pass
-
     report_path = os.path.join(output_dir, "Full_Analysis.html")
     short_report_path = os.path.join(output_dir, "Short_Analysis.html")
     
@@ -669,10 +717,12 @@ def main():
                 f.write(df_daily_all.to_csv())
                 f.write("DAILY_DD_DATA_END -->\n")
 
-        # Monthly breakdown table (already HTML but needs title fixup)
+        # Monthly breakdown tables
         # Note: table_html was constructed with markdown headers previously
         table_html_clean = table_html.replace("## Monthly Contributor Breakdown\n\n", "<h2>Monthly Contributor Breakdown</h2>\n")
         f.write(table_html_clean)
+        if 'currency_table_html' in locals() and currency_table_html:
+            f.write(currency_table_html)
 
         # 11. Final summary boxes and lists
         if explicitly_skipped:

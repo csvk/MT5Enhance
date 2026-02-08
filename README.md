@@ -4,7 +4,8 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 
 ## Project Structure
 - `arrange.py`: (Step 0) Organizes files in a `Hunted/` folder into a structured `Hunted/arranged/` directory (HTML Reports, CSV). This creates the parent directory used by subsequent scripts.
-- `list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list and a `sets/` folder.
+- `e2e.py`: (Automated) A wrapper script that runs `list.py`, `trades.py`, and `analyze.py` in one command.
+- `list.py`: (Step 1) Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list and a `sets/` folder.
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
 - `simulate.py`: Parses the analysis results to create a simplified lot-scaling simulation summary (`sim.html`).
@@ -51,7 +52,26 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
     └── File2.parquet
 ```
 
-## Step-by-Step Instructions
+## Automated Workflow (Recommended)
+For most users, the `e2e.py` script simplifies the process by running Steps 1 through 3 in sequence with a single command.
+
+### E2E Analysis
+Run the entire initialization, trade extraction, and portfolio analysis pipeline at once.
+```bash
+# Option A: Start fresh (Provide parent directory)
+python e2e.py "C:/Path/To/Directory/Hunted/arranged"
+
+# Option B: Update existing (Provide output directory)
+python e2e.py "C:/Path/To/arranged/analysis/output_YYYYMMDD_HHMMSS"
+```
+*   **Workflow**:
+    1.  **Detection**: Script checks for `report_list.csv`.
+    2.  **Auto-Initialize**: If not found, it runs `list.py` to create a new output folder.
+    3.  **Direct Execution**: If found, it skips `list.py` and uses the provided folder.
+    4.  **Completion**: Runs `trades.py` and `analyze.py` sequentially.
+*   **Next Step**: proceed to **Step 4** or **Step 5** for selective exports or simulations.
+
+## Step-by-Step Instructions (Manual)
 
 ### Step 0: Arrange Files
 Organize a raw `Hunted/` folder into a structured format. This script creates the `Hunted/arranged` directory, which serves as the **parent folder** for all subsequent steps.
@@ -107,8 +127,8 @@ python simulate.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
     *   **Lot Simulations**: Scales PnL and MaxDD linearly for lot sizes 0.01, 0.02, 0.03, 0.04, and 0.05.
     *   **Clickable Links**: Report filenames in the table are clickable links that open the original individual HTML reports.
 +
-+### Step 6: Variant Comparison
-+Automatically groups and compares strategy variations (e.g., different `LiveDelay` or `Timeframe` variants of the same base strategy) found in the `Short_Analysis.html` report.
+### Step 6: Variant Comparison
+Automatically groups and compares strategy variations (e.g., different `LiveDelay` or `Timeframe` variants of the same base strategy) found in the `Short_Analysis.html` report.
 +```bash
 +python compare.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 +```

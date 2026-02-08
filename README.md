@@ -126,7 +126,7 @@ python simulate.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
     *   **Pip Gap (Max Seq)**: Captures the theoretical "Base Pip Gap" from the analysis for the worst-case scenario.
     *   **Lot Simulations**: Scales PnL and MaxDD linearly for lot sizes 0.01, 0.02, 0.03, 0.04, and 0.05.
     *   **Clickable Links**: Report filenames in the table are clickable links that open the original individual HTML reports.
-+
+
 ### Step 6: Variant Comparison
 Automatically groups and compares strategy variations (e.g., different `LiveDelay` or `Timeframe` variants of the same base strategy) found in the `Short_Analysis.html` report.
 +```bash

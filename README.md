@@ -43,7 +43,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 │       └── export/                    <-- Created in Step 4
 │           ├── sets/                  <-- Incremental magic numbers
 │           │   └── File1.set
-│           ├── HTML/
+│           ├── HTML Reports/
 │           │   └── File1.htm
 │           └── CSV/
 │               └── File1.parquet

@@ -31,7 +31,7 @@ def export_files():
 
     # 2. Create subfolders
     csv_out_dir = os.path.join(selected_dir, "CSV")
-    html_out_dir = os.path.join(selected_dir, "HTML")
+    html_out_dir = os.path.join(selected_dir, "HTML Reports")
     sets_out_dir = os.path.join(selected_dir, "sets")
     os.makedirs(csv_out_dir, exist_ok=True)
     os.makedirs(html_out_dir, exist_ok=True)
@@ -133,25 +133,47 @@ def export_files():
         if os.path.exists(set_in_path):
             set_out_path = os.path.join(sets_out_dir, set_file_name)
             
-            content = None
-            # Try different encodings
-            for enc in ['utf-16', 'utf-16-le', 'utf-8', 'cp1252']:
-                try:
-                    with open(set_in_path, 'r', encoding=enc) as f:
-                        content = f.read()
-                    break
-                except (UnicodeDecodeError, UnicodeError):
-                    continue
-            
-            if content is None:
-                print(f"  Error: Could not decode {set_file_name} with supported encodings.")
+            # Detect encoding and read content
+            encoding_to_use = 'utf-8' # Default
+            try:
+                with open(set_in_path, 'rb') as rb:
+                    raw_bytes = rb.read(4)
+                    if raw_bytes.startswith(b'\xff\xfe') or raw_bytes.startswith(b'\xfe\xff'):
+                        encoding_to_use = 'utf-16'
+                    elif raw_bytes.startswith(b'\xef\xbb\xbf'):
+                        encoding_to_use = 'utf-8-sig'
+                    else:
+                        # Try utf-8 first (stricter than cp1252)
+                        try:
+                            with open(set_in_path, 'r', encoding='utf-8') as f:
+                                f.read()
+                            encoding_to_use = 'utf-8'
+                        except UnicodeDecodeError:
+                            encoding_to_use = 'cp1252'
+                
+                with open(set_in_path, 'r', encoding=encoding_to_use) as f:
+                    content = f.read()
+            except Exception as e:
+                print(f"  Error: Could not decode {set_file_name}: {e}")
                 continue
 
             # Update Magic Number
             # The format is MAGIC_NUMBER=1||777||1||7770||N
             # We want to replace the first number (before the first ||)
+            # If MAGIC_NUMBER is not 0, then do not update it, if it is 0, then use the generated MAGIC_NUMBER.
             pattern = r'(MAGIC_NUMBER=)(\d+)(\|\|.*)'
-            new_content = re.sub(pattern, rf'\g<1>{magic_counter}\g<3>', content)
+            match = re.search(pattern, content)
+            
+            magic_number_updated = False
+            if match:
+                current_magic = match.group(2)
+                if current_magic == "0":
+                    new_content = re.sub(pattern, rf'\g<1>{magic_counter}\g<3>', content)
+                    magic_number_updated = True
+                else:
+                    new_content = content
+            else:
+                new_content = content
             
             # Process TradeComment
             def modify_comment(match):
@@ -179,19 +201,20 @@ def export_files():
             comment_pattern = r'^(TradeComment=)([^|\r\n]+)(\|\|.*)?$'
             new_content = re.sub(comment_pattern, modify_comment, new_content, flags=re.MULTILINE)
             
-            # Write back in UTF-8
-            with open(set_out_path, 'w', encoding='utf-8') as f:
+            # Write back in the same encoding
+            with open(set_out_path, 'w', encoding=encoding_to_use) as f:
                 f.write(new_content)
                 
-            print(f"  Processed: {set_file_name} -> export/sets/ (Magic Number: {magic_counter}, Max Trades: {max_trades_map.get(file_name, 'N/A')})")
-            magic_counter += 1
+            print(f"  Processed: {set_file_name} -> export/sets/ (Magic Number: {magic_counter if magic_number_updated else current_magic if match else 'N/A'}, Max Trades: {max_trades_map.get(base_name, 'N/A')})")
+            if magic_number_updated:
+                magic_counter += 1
         else:
             print(f"  Warning: .set file not found: {set_in_path}")
 
-        # b. Copy .htm file to HTML/
+        # b. Copy .htm file to HTML Reports/
         if os.path.exists(original_htm_path):
             shutil.copy2(original_htm_path, html_out_dir)
-            print(f"  Copied: {file_name} -> export/HTML/")
+            print(f"  Copied: {file_name} -> export/HTML Reports/")
         else:
             print(f"  Warning: .htm file not found: {original_htm_path}")
 

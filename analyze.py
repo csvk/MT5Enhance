@@ -880,8 +880,13 @@ def main():
                 # 0. Point Detection and Global Pip Gap Collection (for chart and theoretical scenarios)
                 detected_point = None
                 pip_gaps = []
+                max_trades_val = 0
+                mean_gap_max_seq = 0
+                max_seq_last_trade_date = None
+                max_seq_fx_factor = 1.0
+
                 if not df_at.empty:
-                    # Robust symbol detection: find the first non-empty, non-null symbol
+                    # Robust symbol detection
                     s_sym_top = ""
                     if 'Symbol' in df_at.columns:
                         valid_symbols = df_at['Symbol'].dropna()
@@ -893,13 +898,42 @@ def main():
                     
                     if 'SequenceNumber' in df_at.columns:
                         seq_groups_tmp = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')
+                        seq_info = []
                         for _, group in seq_groups_tmp:
                             in_trades = group[group['Direction'].astype(str).str.lower() == 'in'].sort_values('Time')
-                            if len(in_trades) >= 2:
-                                prices_tmp = in_trades['Price'].values
-                                # Fix: Only use the gap between Trade 1 and Trade 2 for the 'base' gap calculation
-                                gap_tmp = abs(prices_tmp[1] - prices_tmp[0]) / detected_point
-                                pip_gaps.append(gap_tmp)
+                            length = len(in_trades)
+                            if length >= 2:
+                                p1 = in_trades.iloc[0]['Price']
+                                p2 = in_trades.iloc[1]['Price']
+                                pn = in_trades.iloc[-1]['Price']
+                                # Base gap (Trade 1 to Trade 2)
+                                gap_base = abs(p2 - p1) / detected_point
+                                pip_gaps.append(gap_base)
+                                
+                                # Mean gap (Trade 1 to Trade N) / (N-1)
+                                mean_gap = (abs(pn - p1) / detected_point) / (length - 1)
+                                last_trade_t = in_trades.iloc[-1]['Time']
+                                seq_info.append({
+                                    'length': length,
+                                    'mean_gap': mean_gap,
+                                    'last_trade_time': last_trade_t,
+                                    'actual_cumulative_gap': abs(pn - p1) / detected_point,
+                                    'start_time': in_trades.iloc[0]['Time']
+                                })
+                        
+                        if seq_info:
+                            df_seq_info = pd.DataFrame(seq_info)
+                            max_trades_val = int(df_seq_info['length'].max())
+                            max_df = df_seq_info[df_seq_info['length'] == max_trades_val]
+                            
+                            # Use max of means if multiple sequences have max length
+                            mean_gap_max_seq = max_df['mean_gap'].max()
+                            best_max_seq = max_df[max_df['mean_gap'] == mean_gap_max_seq].iloc[0]
+                            max_seq_last_trade_date = pd.to_datetime(best_max_seq['last_trade_time']).date()
+                            max_trades_gap = best_max_seq['actual_cumulative_gap']
+                            
+                            # Calculate FX factor for the last trade date of this sequence
+                            max_seq_fx_factor = get_usd_conv_factor(s_sym_top, max_seq_last_trade_date, all_fx_rates)
                 
                 global_avg_gap = np.mean(pip_gaps) if pip_gaps else 0
 
@@ -1108,6 +1142,171 @@ def main():
                                     mean_gap_scenario[f'DD{i}'] = dds_scen[i] * 100000 * max_gap_fx_factor
                                     mean_gap_scenario[f'Gap{i}'] = gaps_scen[i]
                                     mean_gap_scenario[f'Lot{i}'] = vr_scen[i]
+
+                        # 3. Add "Mean Pip Gap on Max Sequence Day" Scenario
+                        max_seq_mean_gap_scenario = None
+                        if theoretical_dd_series and mean_gap_max_seq > 0:
+                            # Use max_seq_fx_factor and max_seq_last_trade_date calculated earlier
+                            target_pipstep = mean_gap_max_seq
+                            
+                            global_atr = target_pipstep / abs(s_pipstep) if s_pipstep != 0 else 1.0
+                            eff_maxpipstep = global_atr * abs(s_maxpipstep) if s_maxpipstep < 0 else s_maxpipstep
+                            
+                            # Find a representative p1 (from max entry or similar)
+                            df_theo_tmp = pd.DataFrame(theoretical_dd_series)
+                            rep_idx = df_theo_tmp['PipStepUsed'].idxmax() # Fallback to max gap day for price anchor
+                            rep_entry = theoretical_dd_series[rep_idx]
+                            
+                            p1_scen = rep_entry['p1_actual']
+                            is_buy_scen = rep_entry['is_buy']
+                            direction_sign = -1 if is_buy_scen else 1
+                            
+                            scen_prices = [0.0] * 23
+                            scen_prices[min(s_ld + 1, 22)] = p1_scen
+                            for k in range(s_ld, 0, -1):
+                                gap_val = min(eff_maxpipstep, target_pipstep * (s_pipstepexp ** (k-1))) if eff_maxpipstep > 0 else target_pipstep * (s_pipstepexp ** (k-1))
+                                scen_prices[k] = scen_prices[k+1] - direction_sign * (gap_val * detected_point)
+                            for k in range(s_ld + 1, 22):
+                                gap_val = min(eff_maxpipstep, target_pipstep * (s_pipstepexp ** (k-1))) if eff_maxpipstep > 0 else target_pipstep * (s_pipstepexp ** (k-1))
+                                scen_prices[k+1] = scen_prices[k] + direction_sign * (gap_val * detected_point)
+                            
+                            vr_scen = [0.0] * 22
+                            vr_scen[1] = sum(min(s_maxlots, s_lot * (s_lotexp ** (j-1))) for j in range(1, s_ld + 2))
+                            for i in range(2, 21):
+                                vr_scen[i] = min(s_maxlots, s_lot * (s_lotexp ** (s_ld + i - 1)))
+                                
+                            dds_scen = {}
+                            gaps_scen = {}
+                            p_anchor_scen = scen_prices[min(s_ld + 1, 21)]
+                            for i in range(1, 21):
+                                target_p = scen_prices[min(s_ld + i + 1, 22)]
+                                total_dd_scen = 0
+                                for j in range(1, i + 1):
+                                    idx_p = min(s_ld + j, 22)
+                                    total_dd_scen += vr_scen[j] * abs(target_p - scen_prices[idx_p])
+                                dds_scen[i] = total_dd_scen
+                                gaps_scen[i] = abs(p_anchor_scen - scen_prices[min(s_ld + i + 1, 21)]) / detected_point
+                            
+                            max_seq_mean_gap_scenario = {
+                                'PipStepUsed': target_pipstep,
+                                'FX_Factor': max_seq_fx_factor
+                            }
+                            for i in range(1, 21):
+                                max_seq_mean_gap_scenario[f'DD{i}'] = dds_scen[i] * 100000 * max_seq_fx_factor
+                                max_seq_mean_gap_scenario[f'Gap{i}'] = gaps_scen[i]
+                                max_seq_mean_gap_scenario[f'Lot{i}'] = vr_scen[i]
+
+                        # --- NEW: POPULATE SCENARIO ROWS BEFORE CHARTING ---
+                        scenario_rows = []
+                        if theoretical_dd_series:
+                            # Select top 2 highest distinct PipStepUsed
+                            df_theo_all = pd.DataFrame(theoretical_dd_series)
+                            if not df_theo_all.empty:
+                                df_theo_all['PipStepUsed'] = df_theo_all['PipStepUsed'].round(2)
+                                distinct_pipsteps = df_theo_all.sort_values('DD20', ascending=False).groupby('PipStepUsed').head(1).sort_values('PipStepUsed', ascending=False)
+                                
+                                top_distinct = distinct_pipsteps.head(2)
+                                bottom_distinct = distinct_pipsteps.tail(2)
+                                
+                                combined_distinct = pd.concat([top_distinct, bottom_distinct]).drop_duplicates(subset=['PipStepUsed'])
+                                combined_distinct = combined_distinct.sort_values('PipStepUsed', ascending=False)
+
+                                for _, d_row in combined_distinct.iterrows():
+                                    is_max = d_row['PipStepUsed'] in top_distinct['PipStepUsed'].values
+                                    prefix = "Max Distinct Gap" if is_max else "Min Distinct Gap"
+                                    
+                                    # Find breach level
+                                    b_idx = -1
+                                    k1_v_str = "N/A"
+                                    try:
+                                        last_dd = 0
+                                        last_gap = 0
+                                        for b in range(1, 21):
+                                            curr_dd = d_row.get(f'DD{b}', 0)
+                                            curr_gap = d_row.get(f'Gap{b}', 0)
+                                            if last_dd < 1000 <= curr_dd:
+                                                b_idx = b
+                                                if curr_dd > last_dd:
+                                                    k1_v = last_gap + (curr_gap - last_gap) * (1000 - last_dd) / (curr_dd - last_dd)
+                                                    k1_v_str = f"{k1_v:,.1f}"
+                                                break
+                                            last_dd = curr_dd
+                                            last_gap = curr_gap
+                                    except: pass
+
+                                    scenario_rows.append({
+                                        'Type': prefix,
+                                        'Date': d_row['Time'].date(),
+                                        'BasePipGap': f"{d_row['PipStepUsed']:.2f}",
+                                        'FXFactor': f"{d_row['FX_Factor']:.4f}",
+                                        'Label': f"{prefix} | Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
+                                        'Data': d_row,
+                                        'BreachIdx': b_idx,
+                                        'K1Gap': k1_v_str
+                                    })
+                                
+                                if 'mean_gap_scenario' in locals() and mean_gap_scenario:
+                                    # Find breach for mean gap
+                                    b_idx = -1
+                                    k1_v_str = "N/A"
+                                    try:
+                                        last_dd = 0
+                                        last_gap = 0
+                                        for b in range(1, 21):
+                                            curr_dd = mean_gap_scenario.get(f'DD{b}', 0)
+                                            curr_gap = mean_gap_scenario.get(f'Gap{b}', 0)
+                                            if last_dd < 1000 <= curr_dd:
+                                                b_idx = b
+                                                if curr_dd > last_dd:
+                                                    k1_v = last_gap + (curr_gap - last_gap) * (1000 - last_dd) / (curr_dd - last_dd)
+                                                    k1_v_str = f"{k1_v:,.1f}"
+                                                break
+                                            last_dd = curr_dd
+                                            last_gap = curr_gap
+                                    except: pass
+
+                                    scenario_rows.append({
+                                        'Type': "Mean Pip Gap (Max DD Day)",
+                                        'Date': max_gap_day.date() if max_gap_day else "N/A",
+                                        'BasePipGap': f"{global_avg_gap:.2f}",
+                                        'FXFactor': f"{max_gap_fx_factor:.4f}",
+                                        'Label': f"Scenario: Mean Pip Gap on Max DD Day ({max_gap_day.date() if max_gap_day else 'N/A'}) | Base Pip Gap: {global_avg_gap:.2f} | USD Conv Factor: {max_gap_fx_factor:.4f}",
+                                        'Data': mean_gap_scenario,
+                                        'BreachIdx': b_idx,
+                                        'K1Gap': k1_v_str
+                                    })
+
+                                if 'max_seq_mean_gap_scenario' in locals() and max_seq_mean_gap_scenario:
+                                    # Find breach for max sequence mean gap
+                                    b_idx = -1
+                                    k1_v_str = "N/A"
+                                    try:
+                                        last_dd = 0
+                                        last_gap = 0
+                                        for b in range(1, 21):
+                                            curr_dd = max_seq_mean_gap_scenario.get(f'DD{b}', 0)
+                                            curr_gap = max_seq_mean_gap_scenario.get(f'Gap{b}', 0)
+                                            if last_dd < 1000 <= curr_dd:
+                                                b_idx = b
+                                                if curr_dd > last_dd:
+                                                    k1_v = last_gap + (curr_gap - last_gap) * (1000 - last_dd) / (curr_dd - last_dd)
+                                                    k1_v_str = f"{k1_v:,.1f}"
+                                                break
+                                            last_dd = curr_dd
+                                            last_gap = curr_gap
+                                    except: pass
+
+                                    scenario_rows.append({
+                                        'Type': "Mean Pip Gap (Max Sequence Day)",
+                                        'Date': max_seq_last_trade_date if max_seq_last_trade_date else "N/A",
+                                        'BasePipGap': f"{mean_gap_max_seq:.2f}",
+                                        'FXFactor': f"{max_seq_fx_factor:.4f}",
+                                        'Label': f"Scenario: Mean Pip Gap on Max Sequence Day ({max_seq_last_trade_date if max_seq_last_trade_date else 'N/A'}) | Base Pip Gap: {mean_gap_max_seq:.2f} | USD Conv Factor: {max_seq_fx_factor:.4f}",
+                                        'Data': max_seq_mean_gap_scenario,
+                                        'BreachIdx': b_idx,
+                                        'K1Gap': k1_v_str
+                                    })
+                        # --- END PRE-POPULATING ---
 
                     except Exception as e:
                         print(f"  Warning: Error in Theoretical DD calc for {report_basename}: {e}")
@@ -1620,6 +1819,65 @@ def main():
                             ax_monthly_combined.set_title("Error Plotting Monthly Activity", fontsize=12)
                     else:
                         ax_monthly_combined.set_title("No Data for Monthly Activity", fontsize=12)
+                    
+                    # Plot 9: Pip Gap Breach Analysis
+                    if 'scenario_rows' in locals() and scenario_rows:
+                        # Extract data for plotting
+                        labels = [s['Type'] for s in scenario_rows]
+                        breach_gaps = []
+                        for s in scenario_rows:
+                            try:
+                                val = float(s['K1Gap'].replace(',', ''))
+                                breach_gaps.append(val)
+                            except:
+                                breach_gaps.append(0)
+                        
+                        # Map long names to short names for chart annotations
+                        name_map = {
+                            "Max Distinct Gap": "Max",
+                            "Min Distinct Gap": "Min",
+                            "Mean Pip Gap (Max DD Day)": "Max DD",
+                            "Mean Pip Gap (Max Sequence Day)": "Max Sequence"
+                        }
+                        short_labels = [name_map.get(l, l) for l in labels]
+                        
+                        x_breach = np.arange(len(labels))
+                        ax_breach = ax_flat[8]
+                        
+                        bars = ax_breach.bar(x_breach, breach_gaps, color='tab:red', alpha=0.6, edgecolor='black', linewidth=0.5)
+                        ax_breach.set_title("Pip Gap Breach Analysis ($1k Threshold)", fontsize=12)
+                        ax_breach.set_ylabel("Pip Gap at Breach")
+                        ax_breach.set_xticks(x_breach)
+                        ax_breach.set_xticklabels(short_labels, rotation=0, fontsize=9) # No rotation needed for short labels
+                        ax_breach.grid(axis='y', alpha=0.3)
+                        
+                        # Add value labels on top of bars
+                        for bar in bars:
+                            height = bar.get_height()
+                            if height > 0:
+                                ax_breach.annotate(f'{height:,.1f}',
+                                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                                            xytext=(0, 3), textcoords="offset points",
+                                            ha='center', va='bottom', fontsize=9, fontweight='bold')
+                                
+                                # ADD BAR NAME AS ANNOTATION (inside the bar or just below the value)
+                                ax_breach.annotate(short_labels[bars.index(bar)],
+                                            xy=(bar.get_x() + bar.get_width() / 2, height / 2),
+                                            rotation=90, ha='center', va='center', fontsize=8, color='white', fontweight='bold')
+                        
+                        # Plot Pip Gap at Max Trades as a horizontal line
+                        if 'max_trades_gap' in locals() and max_trades_gap is not None:
+                            ax_breach.axhline(max_trades_gap, color='blue', linestyle='--', linewidth=2, label=f'Pip Gap at Max Trades: {max_trades_gap:.1f}')
+                            # Add text label for the line itself
+                            ax_breach.text(x_breach[-1] + 0.5, max_trades_gap, f'  Max Sequence Gap: {max_trades_gap:.1f}', color='blue', va='center', fontweight='bold')
+                            ax_breach.legend(fontsize=8, loc='upper left')
+                        
+                        # Adjust y-axis to accommodate labels and line
+                        max_y = max(breach_gaps + ([max_trades_gap] if 'max_trades_gap' in locals() and max_trades_gap else [0]))
+                        if max_y > 0:
+                            ax_breach.set_ylim(0, max_y * 1.2)
+                    else:
+                        ax_flat[8].set_axis_off()
                 
                 plt.tight_layout()
                 per_file_chart_path = os.path.join(charts_folder, f"Chart_{report_basename}.png")
@@ -1723,250 +1981,163 @@ def main():
                             f.write(f"<tr><td>{d['TradeNo']}</td><td>{d['Time']}</td><td>{d['Theo']:.2f}</td><td>{d['Act']:.2f}</td><td>{d['Diff']:.2f}</td></tr>\n", short=(status == "Included"))
                         f.write("</tbody></table></li>\n", short=(status == "Included"))
                     
-                    if theoretical_dd_series:
-                        # Select top 2 highest distinct PipStepUsed
+                    if theoretical_dd_series and 'scenario_rows' in locals() and scenario_rows:
+                        # --- 1. SUMMARY TABLE (Full & Short) ---
+                        f.write(f"<li><strong>Theoretical Max DD Summary in USD (1k Threshold Only)</strong>:\n", short=(status == "Included"))
+                        f.write("<div style='overflow-x: auto;'>\n", short=(status == "Included"))
+                        f.write("<table style='width: 100%; margin: 10px 0; font-size: 12px; border-collapse: collapse; border: 1px solid #ddd;'>\n", short=(status == "Included"))
+                        f.write("<thead><tr style='background-color: #f2f2f2;'>", short=(status == "Included"))
+                        f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Type</th>", short=(status == "Included"))
+                        f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Date</th>", short=(status == "Included"))
+                        f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Base Pip Gap</th>", short=(status == "Included"))
+                        f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>USD Conv Factor</th>", short=(status == "Included"))
+                        f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Trade</th>", short=(status == "Included"))
+                        f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Pip Gap</th>", short=(status == "Included"))
+                        f.write("</tr></thead>\n<tbody>\n", short=(status == "Included"))
 
-                        # Group by PipStepUsed and take the one with max DD20 for each
-                        df_theo_all = pd.DataFrame(theoretical_dd_series)
-                        if not df_theo_all.empty:
-                            # Round PipStepUsed to avoid tiny differences if any
-                            df_theo_all['PipStepUsed'] = df_theo_all['PipStepUsed'].round(2)
-                            
-                            # Distinct PipSteps sorted by value
-                            # We take the best (max DD20) entry for each unique PipStepUsed
-                            distinct_pipsteps = df_theo_all.sort_values('DD20', ascending=False).groupby('PipStepUsed').head(1).sort_values('PipStepUsed', ascending=False)
-                            
-                            top_distinct = distinct_pipsteps.head(2)
-                            bottom_distinct = distinct_pipsteps.tail(2)
-                            
-                            # Combine items, ensuring we don't duplicate if there are < 4 distinct pipsteps
-                            combined_distinct = pd.concat([top_distinct, bottom_distinct]).drop_duplicates(subset=['PipStepUsed'])
-                            # Keep it sorted by PipStepUsed descending
-                            combined_distinct = combined_distinct.sort_values('PipStepUsed', ascending=False)
+                        for s in scenario_rows:
+                            b_str = f"L{s['BreachIdx']}-L{s['BreachIdx']+1}" if s['BreachIdx'] != -1 else "N/A"
+                            f.write("<tr>", short=(status == "Included"))
+                            f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s['Type']}</td>", short=(status == "Included"))
+                            f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s['Date']}</td>", short=(status == "Included"))
+                            f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s['BasePipGap']}</td>", short=(status == "Included"))
+                            f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s['FXFactor']}</td>", short=(status == "Included"))
+                            f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{b_str}</td>", short=(status == "Included"))
+                            f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center; font-weight: bold; color: red;'>{s['K1Gap']}</td>", short=(status == "Included"))
+                            f.write("</tr>\n", short=(status == "Included"))
+                        
+                        f.write("</tbody></table></div></li>\n", short=(status == "Included"))
 
-                            # Prepare scenario rows with breach calculations
-                            scenario_rows = []
-                            for _, d_row in combined_distinct.iterrows():
-                                is_max = d_row['PipStepUsed'] in top_distinct['PipStepUsed'].values
-                                prefix = "Max Distinct Gap" if is_max else "Min Distinct Gap"
+                        # --- 2. DETAILED TABLES (Full Report Only) ---
+                        f.write(f"<li><strong>Theoretical Max DD Summary in USD (Max 2 & Min 2 Distinct Pip Gaps)</strong>:\n", short=False)
+                        f.write("<div style='overflow-x: auto;'>\n", short=False)
+                        f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n", short=False)
+                        
+                        for s in scenario_rows:
+                            d_row = s['Data']
+                            b_idx = s['BreachIdx']
+                            k1_v_str = s['K1Gap']
+                            
+                            # Determine dynamic colspan (Header + 20 levels + 1 breach column if exists)
+                            current_colspan = 21 + (1 if b_idx != -1 else 0)
+
+                            f.write("<thead>\n", short=False)
+                            f.write(f"<tr style='background-color: #f2f2f2;'><th colspan='{current_colspan}' style='padding: 4px; text-align: left;'><b>{s['Label']}</b></th></tr>\n", short=False)
+                            f.write("<tr><th style='padding: 2px;'>Header</th>", short=False)
+                            for b in range(1, 21):
+                                if b == b_idx:
+                                    f.write("<th style='padding: 2px; color: red;'>Threshold: $1,000</th>", short=False)
+                                f.write(f"<th style='padding: 2px;'>L{b}</th>", short=False)
+                            f.write("</tr>\n</thead>\n<tbody>\n", short=False)
+
+                            f.write("<tr><td style='padding: 2px;'><b>Lot / Gap</b></td>", short=False)
+                            for b in range(1, 21):
+                                if b == b_idx:
+                                    f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>{k1_v_str}</td>", short=False)
+                                f.write(f"<td style='padding: 2px;'>{d_row.get(f'Lot{b}', 0):.2f} / {d_row.get(f'Gap{b}', 0):,.0f}</td>", short=False)
+                            f.write("</tr>\n", short=False)
+                            
+                            f.write("<tr><td style='padding: 2px;'><b>DD (USD)</b></td>", short=False)
+                            for b in range(1, 21):
+                                if b == b_idx:
+                                    f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>$1,000</td>", short=False)
+                                dd_val = d_row.get(f'DD{b}', 0)
+                                style = f"padding: 2px; color: {'red' if dd_val >= 1000 else 'black'}; font-weight: {'bold' if dd_val >= 1000 else 'normal'};"
+                                f.write(f"<td style='{style}'>{dd_val:,.0f}</td>", short=False)
+                            f.write("</tr>\n", short=False)
+                            f.write("</tbody>\n", short=False)
+
+                        f.write("</table></div></li>\n", short=False)
+                        
+                        # --- New Table: 1k Drawdown Threshold vs. Starting Lot (Horizontal) ---
+                        try:
+                            if not df_theo_all.empty:
+                                # Get parameters from the Max DD sequence
+                                max_dd_row = df_theo_all.sort_values('DD20', ascending=False).iloc[0]
+                                base_pipstep = max_dd_row['PipStepUsed']
+                                max_dd_fx = max_dd_row['FX_Factor']
                                 
-                                # Find breach level
-                                b_idx = -1
-                                k1_v_str = "N/A"
-                                try:
-                                    last_dd = 0
-                                    last_gap = 0
-                                    for b in range(1, 21):
-                                        curr_dd = d_row.get(f'DD{b}', 0)
-                                        curr_gap = d_row.get(f'Gap{b}', 0)
-                                        if last_dd < 1000 <= curr_dd:
-                                            b_idx = b
-                                            if curr_dd > last_dd:
-                                                k1_v = last_gap + (curr_gap - last_gap) * (1000 - last_dd) / (curr_dd - last_dd)
-                                                k1_v_str = f"{k1_v:,.1f}"
-                                            break
-                                        last_dd = curr_dd
-                                        last_gap = curr_gap
-                                except: pass
-
-                                scenario_rows.append({
-                                    'Type': prefix,
-                                    'Date': d_row['Time'].date(),
-                                    'BasePipGap': f"{d_row['PipStepUsed']:.2f}",
-                                    'FXFactor': f"{d_row['FX_Factor']:.4f}",
-                                    'Label': f"{prefix} | Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
-                                    'Data': d_row,
-                                    'BreachIdx': b_idx,
-                                    'K1Gap': k1_v_str
-                                })
-                            
-                            if 'mean_gap_scenario' in locals() and mean_gap_scenario:
-                                # Find breach for mean gap
-                                b_idx = -1
-                                k1_v_str = "N/A"
-                                try:
-                                    last_dd = 0
-                                    last_gap = 0
-                                    for b in range(1, 21):
-                                        curr_dd = mean_gap_scenario.get(f'DD{b}', 0)
-                                        curr_gap = mean_gap_scenario.get(f'Gap{b}', 0)
-                                        if last_dd < 1000 <= curr_dd:
-                                            b_idx = b
-                                            if curr_dd > last_dd:
-                                                k1_v = last_gap + (curr_gap - last_gap) * (1000 - last_dd) / (curr_dd - last_dd)
-                                                k1_v_str = f"{k1_v:,.1f}"
-                                            break
-                                        last_dd = curr_dd
-                                        last_gap = curr_gap
-                                except: pass
-
-                                scenario_rows.append({
-                                    'Type': "Mean Pip Gap (Max DD Day)",
-                                    'Date': max_gap_day.date() if max_gap_day else "N/A",
-                                    'BasePipGap': f"{global_avg_gap:.2f}",
-                                    'FXFactor': f"{max_gap_fx_factor:.4f}",
-                                    'Label': f"Scenario: Mean Pip Gap on Max DD Day ({max_gap_day.date() if max_gap_day else 'N/A'}) | Base Pip Gap: {global_avg_gap:.2f} | USD Conv Factor: {max_gap_fx_factor:.4f}",
-                                    'Data': mean_gap_scenario,
-                                    'BreachIdx': b_idx,
-                                    'K1Gap': k1_v_str
-                                })
-
-                            # --- 1. SUMMARY TABLE (Full & Short) ---
-                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (1k Threshold Only)</strong>:\n", short=(status == "Included"))
-                            f.write("<div style='overflow-x: auto;'>\n", short=(status == "Included"))
-                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 12px; border-collapse: collapse; border: 1px solid #ddd;'>\n", short=(status == "Included"))
-                            f.write("<thead><tr style='background-color: #f2f2f2;'>", short=(status == "Included"))
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Type</th>", short=(status == "Included"))
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Date</th>", short=(status == "Included"))
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Base Pip Gap</th>", short=(status == "Included"))
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>USD Conv Factor</th>", short=(status == "Included"))
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Trade</th>", short=(status == "Included"))
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Pip Gap</th>", short=(status == "Included"))
-                            f.write("</tr></thead>\n<tbody>\n", short=(status == "Included"))
-
-                            for s in scenario_rows:
-                                b_str = f"L{s['BreachIdx']}-L{s['BreachIdx']+1}" if s['BreachIdx'] != -1 else "N/A"
-                                f.write("<tr>", short=(status == "Included"))
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s['Type']}</td>", short=(status == "Included"))
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s['Date']}</td>", short=(status == "Included"))
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s['BasePipGap']}</td>", short=(status == "Included"))
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s['FXFactor']}</td>", short=(status == "Included"))
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{b_str}</td>", short=(status == "Included"))
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center; font-weight: bold; color: red;'>{s['K1Gap']}</td>", short=(status == "Included"))
-                                f.write("</tr>\n", short=(status == "Included"))
-                            
-                            f.write("</tbody></table></div></li>\n", short=(status == "Included"))
-
-                            # --- 2. DETAILED TABLES (Full Report Only) ---
-                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (Max 2 & Min 2 Distinct Pip Gaps)</strong>:\n", short=False)
-                            f.write("<div style='overflow-x: auto;'>\n", short=False)
-                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n", short=False)
-                            
-                            for s in scenario_rows:
-                                d_row = s['Data']
-                                b_idx = s['BreachIdx']
-                                k1_v_str = s['K1Gap']
+                                # Re-calculate effective maxpipstep for this pipstep
+                                calc_atr = base_pipstep / abs(s_pipstep) if s_pipstep != 0 else 1.0
+                                eff_maxpipstep = calc_atr * abs(s_maxpipstep) if s_maxpipstep < 0 else s_maxpipstep
                                 
-                                # Determine dynamic colspan (Header + 20 levels + 1 breach column if exists)
-                                current_colspan = 21 + (1 if b_idx != -1 else 0)
-
-                                f.write("<thead>\n", short=False)
-                                f.write(f"<tr style='background-color: #f2f2f2;'><th colspan='{current_colspan}' style='padding: 4px; text-align: left;'><b>{s['Label']}</b></th></tr>\n", short=False)
-                                f.write("<tr><th style='padding: 2px;'>Header</th>", short=False)
-                                for b in range(1, 21):
-                                    if b == b_idx:
-                                        f.write("<th style='padding: 2px; color: red;'>Threshold: $1,000</th>", short=False)
-                                    f.write(f"<th style='padding: 2px;'>L{b}</th>", short=False)
-                                f.write("</tr>\n</thead>\n<tbody>\n", short=False)
-
-                                f.write("<tr><td style='padding: 2px;'><b>Lot / Gap</b></td>", short=False)
-                                for b in range(1, 21):
-                                    if b == b_idx:
-                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>{k1_v_str}</td>", short=False)
-                                    f.write(f"<td style='padding: 2px;'>{d_row.get(f'Lot{b}', 0):.2f} / {d_row.get(f'Gap{b}', 0):,.0f}</td>", short=False)
+                                # Prices grid based on base_pipstep
+                                sim_prices = [0.0] * 23
+                                sim_prices[s_ld + 1] = 1.0 # Anchor
+                                for k in range(s_ld + 1, 22):
+                                    gap_sim = min(eff_maxpipstep, base_pipstep * (s_pipstepexp ** (k-1))) if eff_maxpipstep > 0 else base_pipstep * (s_pipstepexp ** (k-1))
+                                    sim_prices[k+1] = sim_prices[k] + (gap_sim * detected_point)
+                                
+                                target_lots = [0.01, 0.02, 0.03, 0.04, 0.05]
+                                lot_results = {}
+                                
+                                for st_lot in target_lots:
+                                    # Simulate volumes
+                                    sim_vols = [0.0] * 22
+                                    sim_vols[1] = sum(min(s_maxlots, st_lot * (s_lotexp ** (j-1))) for j in range(1, s_ld + 2))
+                                    for j in range(2, 21):
+                                        sim_vols[j] = min(s_maxlots, st_lot * (s_lotexp ** (s_ld + j - 1)))
+                                        
+                                    # Find 1k Gap
+                                    final_k1_gap = "N/A"
+                                    total_lots_k1 = "N/A"
+                                    level_k1 = "N/A"
+                                    l_dd = 0
+                                    l_gap = 0
+                                    for i in range(1, 21):
+                                        t_p = sim_prices[min(s_ld + i + 1, 22)]
+                                        dd_val_sim = 0
+                                        open_v = 0
+                                        for j in range(1, i + 1):
+                                            dd_val_sim += sim_vols[j] * abs(t_p - sim_prices[s_ld + j])
+                                            open_v += sim_vols[j]
+                                        dd_usd_sim = dd_val_sim * 100000 * max_dd_fx
+                                        curr_gap_sim = abs(t_p - 1.0) / detected_point
+                                        
+                                        if l_dd < 1000 <= dd_usd_sim:
+                                            if dd_usd_sim > l_dd:
+                                                iv = l_gap + (curr_gap_sim - l_gap) * (1000 - l_dd) / (dd_usd_sim - l_dd)
+                                                final_k1_gap = f"{iv:,.1f}"
+                                                total_lots_k1 = f"{open_v:.2f}"
+                                                level_k1 = f"L{i}-{i+1}"
+                                            break
+                                        l_dd = dd_usd_sim
+                                        l_gap = curr_gap_sim
+                                    lot_results[st_lot] = {'gap': final_k1_gap, 'lots': total_lots_k1, 'level': level_k1}
+                                
+                                # Output Table
+                                f.write("<li><strong>1k Drawdown Threshold vs. Starting Lot (Pips)</strong>:\n", short=False)
+                                f.write("<div style='overflow-x: auto;'>\n", short=False)
+                                f.write("<table style='margin: 10px 0; font-size: 10px; border-collapse: collapse; min-width: 300px;'>\n", short=False)
+                                f.write("<thead><tr style='background-color: #f2f2f2;'>", short=False)
+                                f.write("<th style='border: 1px solid #ddd; padding: 4px;'>Starting Lot</th>", short=False)
+                                for lt in target_lots:
+                                    f.write(f"<th style='border: 1px solid #ddd; padding: 4px;'>{lt}</th>", short=False)
+                                f.write("</tr></thead>\n<tbody>\n", short=False)
+                                
+                                # Pip Gap Row
+                                f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>1k Pip Gap</b></td>", short=False)
+                                for lt in target_lots:
+                                    f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['gap']}</td>", short=False)
                                 f.write("</tr>\n", short=False)
                                 
-                                f.write("<tr><td style='padding: 2px;'><b>DD (USD)</b></td>", short=False)
-                                for b in range(1, 21):
-                                    if b == b_idx:
-                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>$1,000</td>", short=False)
-                                    dd_val = d_row.get(f'DD{b}', 0)
-                                    style = f"padding: 2px; color: {'red' if dd_val >= 1000 else 'black'}; font-weight: {'bold' if dd_val >= 1000 else 'normal'};"
-                                    f.write(f"<td style='{style}'>{dd_val:,.0f}</td>", short=False)
+                                # Total Lots Row
+                                f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Total Lots</b></td>", short=False)
+                                for lt in target_lots:
+                                    f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['lots']}</td>", short=False)
                                 f.write("</tr>\n", short=False)
-                                f.write("</tbody>\n", short=False)
-
-                            f.write("</table></div></li>\n", short=False)
-                            
-                            # --- New Table: 1k Drawdown Threshold vs. Starting Lot (Horizontal) ---
-                            try:
-                                if not df_theo_all.empty:
-                                    # Get parameters from the Max DD sequence
-                                    max_dd_row = df_theo_all.sort_values('DD20', ascending=False).iloc[0]
-                                    base_pipstep = max_dd_row['PipStepUsed']
-                                    max_dd_fx = max_dd_row['FX_Factor']
-                                    
-                                    # Re-calculate effective maxpipstep for this pipstep
-                                    calc_atr = base_pipstep / abs(s_pipstep) if s_pipstep != 0 else 1.0
-                                    eff_maxpipstep = calc_atr * abs(s_maxpipstep) if s_maxpipstep < 0 else s_maxpipstep
-                                    
-                                    # Prices grid based on base_pipstep
-                                    sim_prices = [0.0] * 23
-                                    sim_prices[s_ld + 1] = 1.0 # Anchor
-                                    for k in range(s_ld + 1, 22):
-                                        gap_sim = min(eff_maxpipstep, base_pipstep * (s_pipstepexp ** (k-1))) if eff_maxpipstep > 0 else base_pipstep * (s_pipstepexp ** (k-1))
-                                        sim_prices[k+1] = sim_prices[k] + (gap_sim * detected_point)
-                                    
-                                    target_lots = [0.01, 0.02, 0.03, 0.04, 0.05]
-                                    lot_results = {}
-                                    
-                                    for st_lot in target_lots:
-                                        # Simulate volumes
-                                        sim_vols = [0.0] * 22
-                                        sim_vols[1] = sum(min(s_maxlots, st_lot * (s_lotexp ** (j-1))) for j in range(1, s_ld + 2))
-                                        for j in range(2, 21):
-                                            sim_vols[j] = min(s_maxlots, st_lot * (s_lotexp ** (s_ld + j - 1)))
-                                            
-                                        # Find 1k Gap
-                                        final_k1_gap = "N/A"
-                                        total_lots_k1 = "N/A"
-                                        level_k1 = "N/A"
-                                        l_dd = 0
-                                        l_gap = 0
-                                        for i in range(1, 21):
-                                            t_p = sim_prices[min(s_ld + i + 1, 22)]
-                                            dd_val_sim = 0
-                                            open_v = 0
-                                            for j in range(1, i + 1):
-                                                dd_val_sim += sim_vols[j] * abs(t_p - sim_prices[s_ld + j])
-                                                open_v += sim_vols[j]
-                                            dd_usd_sim = dd_val_sim * 100000 * max_dd_fx
-                                            curr_gap_sim = abs(t_p - 1.0) / detected_point
-                                            
-                                            if l_dd < 1000 <= dd_usd_sim:
-                                                if dd_usd_sim > l_dd:
-                                                    iv = l_gap + (curr_gap_sim - l_gap) * (1000 - l_dd) / (dd_usd_sim - l_dd)
-                                                    final_k1_gap = f"{iv:,.1f}"
-                                                    total_lots_k1 = f"{open_v:.2f}"
-                                                    level_k1 = f"L{i}-{i+1}"
-                                                break
-                                            l_dd = dd_usd_sim
-                                            l_gap = curr_gap_sim
-                                        lot_results[st_lot] = {'gap': final_k1_gap, 'lots': total_lots_k1, 'level': level_k1}
-                                    
-                                    # Output Table
-                                    f.write("<li><strong>1k Drawdown Threshold vs. Starting Lot (Pips)</strong>:\n", short=False)
-                                    f.write("<div style='overflow-x: auto;'>\n", short=False)
-                                    f.write("<table style='margin: 10px 0; font-size: 10px; border-collapse: collapse; min-width: 300px;'>\n", short=False)
-                                    f.write("<thead><tr style='background-color: #f2f2f2;'>", short=False)
-                                    f.write("<th style='border: 1px solid #ddd; padding: 4px;'>Starting Lot</th>", short=False)
-                                    for lt in target_lots:
-                                        f.write(f"<th style='border: 1px solid #ddd; padding: 4px;'>{lt}</th>", short=False)
-                                    f.write("</tr></thead>\n<tbody>\n", short=False)
-                                    
-                                    # Pip Gap Row
-                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>1k Pip Gap</b></td>", short=False)
-                                    for lt in target_lots:
-                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['gap']}</td>", short=False)
-                                    f.write("</tr>\n", short=False)
-                                    
-                                    # Total Lots Row
-                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Total Lots</b></td>", short=False)
-                                    for lt in target_lots:
-                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['lots']}</td>", short=False)
-                                    f.write("</tr>\n", short=False)
-                                    
-                                    # Trade Level Row
-                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Trade Level</b></td>", short=False)
-                                    for lt in target_lots:
-                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['level']}</td>", short=False)
-                                    f.write("</tr>\n", short=False)
-                                    
-                                    f.write("</tbody></table></div></li>\n", short=False)
-                            except Exception as ex_sim:
-                                f.write(f"<li><strong style='color: red;'>Simulation Error</strong>: {ex_sim}</li>\n", short=(status == "Included"))
-                        elif 'theoretical_skip_reason' in locals() and theoretical_skip_reason:
-                            f.write(f"<li><strong style='color: #856404;'>Theoretical DD Skipped</strong>: {theoretical_skip_reason}</li>\n", short=(status == "Included"))
+                                
+                                # Trade Level Row
+                                f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Trade Level</b></td>", short=False)
+                                for lt in target_lots:
+                                    f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['level']}</td>", short=False)
+                                f.write("</tr>\n", short=False)
+                                
+                                f.write("</tbody></table></div></li>\n", short=False)
+                        except Exception as ex_sim:
+                            f.write(f"<li><strong style='color: red;'>Simulation Error</strong>: {ex_sim}</li>\n", short=(status == "Included"))
+                    elif 'theoretical_skip_reason' in locals() and theoretical_skip_reason:
+                        f.write(f"<li><strong style='color: #856404;'>Theoretical DD Skipped</strong>: {theoretical_skip_reason}</li>\n", short=(status == "Included"))
 
                     
                     f.write("</ul>\n", short=(status == "Included"))

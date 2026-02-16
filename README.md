@@ -138,6 +138,25 @@ Automatically groups and compares strategy variations (e.g., different `LiveDela
 +    *   **Smart Filtering**: Only includes strategies that actually have variants, keeping the report focused.
 +    *   **Side-by-Side Comparison**: Displays PnL, Drawdown, Recovery Factor, and Trade Counts for each variant in a clean, comparative table.
 
+### Step 7: Pair Correlation Grouping
+Groups FX pairs into buckets to minimize intra-bucket correlation. It also generates "super buckets" and a 3-bucket maximal inclusion configuration.
+```bash
+# Option A: Run optimization search (default)
+python cor/group.py --csv "cor/correlation.csv" --seed 42
+
+# Option B: Use manual buckets from JSON
+python cor/group.py --csv "cor/correlation.csv" --manual "cor/buckets.json"
+```
+*   **Input**: A CSV file with pairwise correlations.
+*   **Output**: A markdown report with a datetime suffix (e.g., `buckets_report_YYYYMMDD_HHMMSS.md`) containing:
+    *   **Original 5 Buckets**: Either optimized or manually provided.
+    *   **Super Buckets**: Best mergers of 2 or 3 original buckets.
+    *   **Max Inclusion 3-Bucket Configuration**: Maximizes pairs included with $\le 1$ high correlation per bucket.
+*   **Arguments**:
+    *   `--csv`: Path to the correlation CSV (default: `cor/correlation.csv`).
+    *   `--manual`: Path to a JSON file for manual grouping (e.g., `cor/buckets.json`).
+    *   `--seed`: Random seed for reproducible optimization (default: 42). Set to a different number or omit for variety.
+
 ## Utility Scripts
 
 ### Export Parameters to CSV

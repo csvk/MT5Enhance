@@ -189,10 +189,13 @@ def export_files():
                     currency_index = len(parts) - 3
                     new_val = first_part + "_" + "_".join(parts[currency_index:])
                     
-                    # Add Max Trades Suffix
+                    # Add or Replace Max Trades Suffix
                     # Use base_name which is already defined as os.path.splitext(file_name)[0]
                     max_val = max_trades_map.get(base_name, "N/A")
-                    new_val += f"_Max{max_val}"
+                    if "_Max" in new_val:
+                        new_val = re.sub(r"_Max(?:\d+|N/A)", f"_Max{max_val}", new_val)
+                    else:
+                        new_val += f"_Max{max_val}"
                     
                     return f"{prefix}{new_val}{suffix}"
                 return match.group(0)

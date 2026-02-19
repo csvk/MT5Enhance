@@ -129,16 +129,18 @@ python simulate.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 
 ### Step 6: Variant Comparison
 Automatically groups and compares strategy variations (e.g., different `LiveDelay` or `Timeframe` variants of the same base strategy) found in the `Short_Analysis.html` report.
-+```bash
-+python compare.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
-+```
-+*   **Output**: Saves `compare_report.html` inside your output directory and automatically opens it in the browser.
-+*   **Key Features**:
-+    *   **Auto-Detection**: Dynamically finds suffixes like `_ld1`, `_ld2`, `_t18`, etc., to identify variants.
-+    *   **Smart Filtering**: Only includes strategies that actually have variants, keeping the report focused.
-+    *   **Side-by-Side Comparison**: Displays PnL, Drawdown, Recovery Factor, and Trade Counts for each variant in a clean, comparative table.
+```bash
+python compare.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
+```
+*   **Output**: Saves `compare_report.html` inside your output directory and automatically opens it in the browser.
+*   **Key Features**:
+    *   **Auto-Detection**: Dynamically finds suffixes like `_ld1`, `_ld2`, `_t18`, etc., to identify variants.
+    *   **Smart Filtering**: Only includes strategies that actually have variants, keeping the report focused.
+    *   **Side-by-Side Comparison**: Displays PnL, Drawdown, Recovery Factor, and Trade Counts for each variant in a clean, comparative table.
 
-### Step 7: Pair Correlation Grouping
+## Utility Scripts
+
+### Pair Correlation Grouping (`cor/group.py`)
 Groups FX pairs into buckets to minimize intra-bucket correlation. It also generates "super buckets" and a 3-bucket maximal inclusion configuration.
 ```bash
 # Option A: Run optimization search (default)
@@ -156,8 +158,6 @@ python cor/group.py --csv "cor/correlation.csv" --manual "cor/buckets.json"
     *   `--csv`: Path to the correlation CSV (default: `cor/correlation.csv`).
     *   `--manual`: Path to a JSON file for manual grouping (e.g., `cor/buckets.json`).
     *   `--seed`: Random seed for reproducible optimization (default: 42). Set to a different number or omit for variety.
-
-## Utility Scripts
 
 ### Export Parameters to CSV
 Convert a directory of MT5 `.set` or `.chr` files into a single CSV for easy comparison.

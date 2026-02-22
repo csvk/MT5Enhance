@@ -13,7 +13,8 @@ def parse_arguments():
 
 def extract_metrics(html_content):
     # Regular expression to find report headers and their metrics
-    report_pattern = re.compile(r"<h3>\d+\. Report: <a[^>]*>(.*?)</a></h3>.*?<ul class='metrics-list'>(.*?)</ul>", re.DOTALL)
+    # Made <a> tag optional and more robust to whitespace
+    report_pattern = re.compile(r"<h3>\d+\. Report: (?:<a[^>]*>)?(.*?)(?:</a>)?</h3>.*?<ul class='metrics-list'>(.*?)</ul>", re.DOTALL)
     
     # Regular expression to extract metrics from the list
     metric_pattern = re.compile(r"<li><strong>(.*?)</strong>: (.*?)</li>")
@@ -21,15 +22,21 @@ def extract_metrics(html_content):
     results = []
     
     for report_name, metrics_html in report_pattern.findall(html_content):
+        report_name = report_name.strip()
         # Improved suffix detection
-        # Matches patterns like _ld1, _t18, _v1, etc.
-        match = re.search(r'(.*?)_([a-zA-Z]+\d+)$', report_name)
+        # 1. Strip common extensions that might be duplicated or nested
+        clean_name = re.sub(r'(\.set|\.html?)+$', '', report_name, flags=re.IGNORECASE).strip()
+        
+        # 2. Matches patterns like _ld1, _v1, etc.
+        match = re.search(r'^(.*?)_([a-zA-Z]+\d+)$', clean_name)
         if match:
-            base_name = match.group(1)
-            variant = match.group(2)
+            base_name = match.group(1).strip()
+            variant = match.group(2).strip()
         else:
-            base_name = report_name
+            base_name = clean_name
             variant = "Original"
+        
+        # print(f"DEBUG: Found report '{report_name}' -> Base: '{base_name}', Variant: '{variant}'")
         
         metrics = {}
         target_metrics = ["Total PnL", "Max Drawdown", "Recovery Factor", "Max Trades in Sequence", "Buy Trades", "Sell Trades"]
@@ -87,8 +94,8 @@ def get_selected_reports(output_dir):
             code_tag = report_file_td.find('code')
             if code_tag:
                 name = code_tag.get_text(strip=True)
-                # Remove .htm or .html extension for matching
-                base_name = os.path.splitext(name)[0]
+                # Remove .htm, .html, or .set extension for matching
+                base_name = re.sub(r'(\.set|\.html?)+$', '', name, flags=re.IGNORECASE)
                 selected.add(base_name)
         return selected
     except Exception as e:
@@ -127,7 +134,9 @@ def generate_report(results, output_file, selected_reports=None):
             full_name = item.get('FullReportName', '')
             
             # Check if this variation is "selected"
-            is_selected = full_name in selected_reports
+            # Normalize full_name for comparison
+            normalized_full_name = re.sub(r'(\.set|\.html?)+$', '', full_name, flags=re.IGNORECASE)
+            is_selected = normalized_full_name in selected_reports
             marker = " <span class='selected-marker'>*</span>" if is_selected else ""
             bold_style = " style='font-weight: bold;'" if is_selected else ""
             
@@ -180,9 +189,11 @@ def main():
     args = parse_arguments()
     
     output_dir = os.path.abspath(args.output_dir)
-    html_file = os.path.join(output_dir, 'Short_Analysis.html')
-
+    # Switch to Full_Analysis.html to ensure we see all variants including skipped ones
+    html_file = os.path.join(output_dir, 'Full_Analysis.html')
     if not os.path.exists(html_file):
+        # Fallback to Short_Analysis.html if Full doesn't exist
+        html_file = os.path.join(output_dir, 'Short_Analysis.html')
         print(f"Error: {html_file} not found.")
         return
 

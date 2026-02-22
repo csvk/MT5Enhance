@@ -43,6 +43,7 @@ def run_command(command, capture_output=False):
 def main():
     parser = argparse.ArgumentParser(description="End-to-End Analysis Pipeline")
     parser.add_argument("input_path", type=str, help="Path to the parent folder (for initialization) or an existing output folder (to update).")
+    parser.add_argument("--all", action="store_true", help="Force analyze.py to process all reports in detail.")
     args = parser.parse_args()
 
     input_path = os.path.abspath(args.input_path)
@@ -104,6 +105,8 @@ def main():
     log_step("Step 3: Performing portfolio analysis with analyze.py")
     analyze_script = os.path.join(SCRIPT_DIR, "analyze.py")
     analyze_cmd = ["python", analyze_script, output_dir]
+    if args.all:
+        analyze_cmd.append("--all")
     log_info(f"Executing: {' '.join(analyze_cmd)}")
     run_command(analyze_cmd)
     log_success("Portfolio analysis completed.")

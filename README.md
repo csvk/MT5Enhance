@@ -28,9 +28,11 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 ├── analysis/
 │   └── output_20231223_120000/        <-- Created in Step 1
 │       ├── report_list.csv
+│       ├── report_list.filtered.csv   <-- Created in Step 7
 │       ├── prices/                    <-- Created in Step 1 (FX Data)
 │       ├── Full_Analysis.html         <-- Created in Step 3
 │       ├── Short_Analysis.html        <-- Created in Step 3
+│       ├── Filtered Report.html       <-- Created in Step 7
 │       ├── compare_report.html        <-- Created in Step 6
 │       ├── sim.html                   <-- Created in Step 5
 │       ├── charts/                    <-- Created in Step 3
@@ -138,6 +140,19 @@ python compare.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
     *   **Smart Filtering**: Only includes strategies that actually have variants, keeping the report focused.
     *   **Side-by-Side Comparison**: Displays PnL, Drawdown, Recovery Factor, and Trade Counts for each variant in a clean, comparative table.
 
+### Step 7: Filter Analysis Report
+Select the top N most profitable files from an existing analysis and generate a focused report.
+```bash
+python filter.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS" 10
+```
+*   **Output**: 
+    *   `Filtered Report.html`: A focused report containing only the top N contributors.
+    *   `report_list.filtered.csv`: A copy of the report list with only selected files marked for inclusion.
+*   **Key Features**:
+    *   **Automatic Selection**: Automatically identifies the most profitable strategies from the analysis.
+    *   **Manual Construction**: Builds a new report by extracting relevant data without needing to re-run the full analysis.
+    *   **Cleanup**: Omit portfolio-level charts to focus specifically on the selected top performers.
+
 ## Utility Scripts
 
 ### Pair Correlation Grouping (`cor/group.py`)
@@ -171,10 +186,13 @@ python sets2csv.py "C:/Path/To/Your/Sets"
 ### LiveDelay Variations (`ldsets.py`)
 Generates variations of set files with incremental `LiveDelay` values for strategies that reached high sequence levels.
 ```bash
-python ldsets.py "C:/Path/To/analysis/output_folder"
+python ldsets.py "C:/Path/To/analysis/output_folder" [--limit N] [-n N] [--contributors]
 ```
 *   **Threshold**: Only creates variations if "Max Trades in Sequence" > 4.
 *   **Logic**: Creates `floor(Max Trades / 2)` variations (e.g., if Max Trades is 7, creates ld1, ld2, and ld3).
+*   **Limit**: Optional `--limit N` (or `-l N`) restricts the maximum number of variations created per report.
+*   **Single Variation**: Optional `-n N` generates *only* the specific `ldN` variation for qualifying reports.
+*   **Filtering**: Optional `--contributors` flag limits generation to only those reports listed in the "Monthly Contributor Breakdown" table.
 *   **Output**: Saves new `.set` files in an `ldsets/` subfolder.
 
 ### Theoretical Drawdown Calculator (`dd.py`)

@@ -10,6 +10,7 @@ import numpy as np
 import math
 import webbrowser
 from bs4 import BeautifulSoup
+import re
 
 class MultiWriter:
     def __init__(self, f_full, f_short):
@@ -25,6 +26,7 @@ def main():
     parser.add_argument('--start', type=str, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--base', type=float, default=100000.0, help='Base capital (default: 100,000)')
+    parser.add_argument('--all', action='store_true', help='Process all reports in detail, even if excluded from portfolio.')
     args = parser.parse_args()
 
     output_dir = os.path.abspath(args.output_folder)
@@ -509,7 +511,6 @@ def main():
         clean_symbol = symbol.split('.')[0].split('_')[0]
         if len(clean_symbol) < 6:
             # Try to extract first 6 alphas if delimiters failed
-            import re
             match = re.match(r'^([A-Za-z]{6})', symbol)
             if match:
                 clean_symbol = match.group(1)
@@ -766,7 +767,8 @@ def main():
                     df_list_all = pd.read_csv(report_list_path)
                     for _, row_all in df_list_all.iterrows():
                         fname = os.path.basename(row_all['FilePath'])
-                        basename = os.path.splitext(fname)[0]
+                        # Remove .set.html, .html, .set etc.
+                        basename = re.sub(r'(\.set|\.html?)+$', '', fname, flags=re.IGNORECASE)
                         all_reports_to_show.append({
                             'basename': basename,
                             'original_filename': fname,
@@ -776,11 +778,13 @@ def main():
                     # Fallback to current behavior if list reading fails
                     for atf in all_trades_files:
                         bn = os.path.basename(atf).replace("all_trades_", "").replace(".csv", "")
+                        bn = re.sub(r'(\.set)+$', '', bn, flags=re.IGNORECASE)
                         all_reports_to_show.append({'basename': bn, 'original_filename': bn + ".html", 'full_html_path': None})
             else:
                 # Fallback if report_list.csv doesn't exist at all
                 for atf in all_trades_files:
                     bn = os.path.basename(atf).replace("all_trades_", "").replace(".csv", "")
+                    bn = re.sub(r'(\.set)+$', '', bn, flags=re.IGNORECASE)
                     all_reports_to_show.append({'basename': bn, 'original_filename': bn + ".html", 'full_html_path': None})
             short_idx = 1
             for idx, r_info in enumerate(all_reports_to_show, 1):
@@ -867,15 +871,18 @@ def main():
 
                 df_at['Time'] = pd.to_datetime(df_at['Time'])
                 
+                # Should we skip heavy calculations for this report?
+                should_process_detailed = (status == "Included") or args.all
+                
                 # Load parquet data if available
-                df_parquet = load_parquet_data(full_html_path) if full_html_path else None
+                df_parquet = load_parquet_data(full_html_path) if (full_html_path and should_process_detailed) else None
                 
                 # Load .set file data if available
                 sets_dir = os.path.join(output_dir, "sets")
-                set_params = parse_set_file(full_html_path, sets_dir) if full_html_path else None
+                set_params = parse_set_file(full_html_path, sets_dir) if (full_html_path and should_process_detailed) else None
                 
                 # Extract Report Metrics
-                report_metrics = extract_report_metrics(full_html_path) if full_html_path else {'ProfitFactor': 'N/A', 'RecoveryFactor': 'N/A'}
+                report_metrics = extract_report_metrics(full_html_path) if (full_html_path and should_process_detailed) else {'ProfitFactor': 'N/A', 'RecoveryFactor': 'N/A'}
                 
                 # 0. Point Detection and Global Pip Gap Collection (for chart and theoretical scenarios)
                 detected_point = None
@@ -885,7 +892,7 @@ def main():
                 max_seq_last_trade_date = None
                 max_seq_fx_factor = 1.0
 
-                if not df_at.empty:
+                if not df_at.empty and should_process_detailed:
                     # Robust symbol detection
                     s_sym_top = ""
                     if 'Symbol' in df_at.columns:
@@ -1310,6 +1317,8 @@ def main():
 
                     except Exception as e:
                         print(f"  Warning: Error in Theoretical DD calc for {report_basename}: {e}")
+                elif not should_process_detailed:
+                    theoretical_skip_reason = "Detailed calculations skipped (Report excluded from portfolio). Use --all to force."
                 
                 # Convert set_params to numeric for calculations
                 s_lot = 0.0
@@ -1385,6 +1394,16 @@ def main():
                 df_at_sorted = df_at.sort_values('Time')
                 exits = df_at_sorted[df_at_sorted['Direction'].str.lower().isin(['out', 'in/out'])].copy()
                 
+                if not should_process_detailed:
+                    f.write(f"<h3>{idx}. Report: {report_basename}</h3>\n", short=False)
+                    if status == "Included": # Should not happen with logic above but for safety
+                         f.write(f"<h3>{short_idx}. Report: {report_basename}</h3>\n", full=False)
+                         short_idx += 1
+                    f.write(f"<p>- <strong>Status</strong>: <span class='{status_class}'>{status}</span> {f'({reason})' if reason else ''}</p>\n")
+                    f.write(f"<p>- <strong>Note</strong>: Detailed calculations and charts skipped for this excluded report. Use <code>--all</code> to include.</p>\n")
+                    f.write("<hr>\n")
+                    continue
+
                 # Chart 3x3: Balance, Underwater, Histogram | Hold Times, Volumes, Theoretical Drawdown | Seq/Month, Unused, Unused
                 fig, axes = plt.subplots(3, 3, figsize=(20, 18))
                 

@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 from bs4 import BeautifulSoup
 import re
+import webbrowser
 
 def filter_report():
     parser = argparse.ArgumentParser(description='Filter analysis report by top N profitable files.')
@@ -359,6 +360,13 @@ def filter_report():
         f.write(new_soup.prettify())
     
     print(f"Generated {filtered_report_path}")
+    
+    # Automatically open in default browser
+    try:
+        clickable_link = f"file:///{filtered_report_path.replace(os.sep, '/')}"
+        webbrowser.open(clickable_link)
+    except Exception as e:
+        print(f"Could not automatically open browser: {e}")
 
 if __name__ == "__main__":
     filter_report()

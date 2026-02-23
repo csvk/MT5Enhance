@@ -195,6 +195,14 @@ python ldsets.py "C:/Path/To/analysis/output_folder" [--limit N] [-n N] [--contr
 *   **Filtering**: Optional `--contributors` flag limits generation to only those reports listed in the "Monthly Contributor Breakdown" table.
 *   **Output**: Saves new `.set` files in an `ldsets/` subfolder.
 
+### Batch Modify Parameters (`patchsets.py`)
+Batch updates a specific parameter in all `.set` files within a directory if it matches a target value.
+```bash
+python patchsets.py --dir "C:/Path/To/Your/Sets" --param MAGIC_NUMBER --target 1 --reset 0
+```
+*   **Verification**: Automatically runs `sets2csv.py` before and after to verify only the intended changes were made.
+*   **Safety**: Produces an error log if any unwanted changes are detected.
+
 ### Theoretical Drawdown Calculator (`dd.py`)
 Provides a detailed console-based sensitivity analysis for individual reports.
 ```bash

@@ -97,6 +97,8 @@ def main():
     log_step("Step 2: Extracting trades with trades.py")
     trades_script = os.path.join(SCRIPT_DIR, "trades.py")
     trades_cmd = ["python", trades_script, output_dir]
+    if args.all:
+        trades_cmd.append("--all")
     log_info(f"Executing: {' '.join(trades_cmd)}")
     run_command(trades_cmd)
     log_success("Trades extraction completed.")

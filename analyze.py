@@ -1399,9 +1399,9 @@ def main():
                     if status == "Included": # Should not happen with logic above but for safety
                          f.write(f"<h3>{short_idx}. Report: {report_basename}</h3>\n", full=False)
                          short_idx += 1
-                    f.write(f"<p>- <strong>Status</strong>: <span class='{status_class}'>{status}</span> {f'({reason})' if reason else ''}</p>\n")
-                    f.write(f"<p>- <strong>Note</strong>: Detailed calculations and charts skipped for this excluded report. Use <code>--all</code> to include.</p>\n")
-                    f.write("<hr>\n")
+                    f.write(f"<p>- <strong>Status</strong>: <span class='{status_class}'>{status}</span> {f'({reason})' if reason else ''}</p>\n", short=False)
+                    f.write(f"<p>- <strong>Note</strong>: Detailed calculations and charts skipped for this excluded report. Use <code>--all</code> to include.</p>\n", short=False)
+                    f.write("<hr>\n", short=False)
                     continue
 
                 # Chart 3x3: Balance, Underwater, Histogram | Hold Times, Volumes, Theoretical Drawdown | Seq/Month, Unused, Unused
@@ -1844,12 +1844,21 @@ def main():
                         # Extract data for plotting
                         labels = [s['Type'] for s in scenario_rows]
                         breach_gaps = []
+                        bar_colors = []
                         for s in scenario_rows:
                             try:
-                                val = float(s['K1Gap'].replace(',', ''))
-                                breach_gaps.append(val)
+                                if s['BreachIdx'] != -1:
+                                    val = float(s['K1Gap'].replace(',', ''))
+                                    breach_gaps.append(val)
+                                    bar_colors.append('tab:red')
+                                else:
+                                    # If no breach, show Gap20 in green
+                                    val = float(s['Data'].get('Gap20', 0))
+                                    breach_gaps.append(val)
+                                    bar_colors.append('tab:green')
                             except:
                                 breach_gaps.append(0)
+                                bar_colors.append('tab:red')
                         
                         # Map long names to short names for chart annotations
                         name_map = {
@@ -1863,7 +1872,7 @@ def main():
                         x_breach = np.arange(len(labels))
                         ax_breach = ax_flat[8]
                         
-                        bars = ax_breach.bar(x_breach, breach_gaps, color='tab:red', alpha=0.6, edgecolor='black', linewidth=0.5)
+                        bars = ax_breach.bar(x_breach, breach_gaps, color=bar_colors, alpha=0.6, edgecolor='black', linewidth=0.5)
                         ax_breach.set_title("Pip Gap Breach Analysis ($1k Threshold)", fontsize=12)
                         ax_breach.set_ylabel("Pip Gap at Breach")
                         ax_breach.set_xticks(x_breach)
@@ -1871,10 +1880,15 @@ def main():
                         ax_breach.grid(axis='y', alpha=0.3)
                         
                         # Add value labels on top of bars
-                        for bar in bars:
+                        for i, bar in enumerate(bars):
                             height = bar.get_height()
                             if height > 0:
-                                ax_breach.annotate(f'{height:,.1f}',
+                                label_suffix = ""
+                                if bar_colors[i] == 'tab:green':
+                                    dd_val = scenario_rows[i]['Data'].get('DD20', 0)
+                                    label_suffix = f"\n(DD: {dd_val:,.0f})"
+                                
+                                ax_breach.annotate(f'{height:,.1f}{label_suffix}',
                                             xy=(bar.get_x() + bar.get_width() / 2, height),
                                             xytext=(0, 3), textcoords="offset points",
                                             ha='center', va='bottom', fontsize=9, fontweight='bold')

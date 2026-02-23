@@ -178,6 +178,7 @@ def main():
     parser = argparse.ArgumentParser(description='Extract Non-Overlapping Trades to CSV')
     parser.add_argument('output_folder', type=str, help='Path to the output folder (e.g., [Parent]/analysis/output_*) created in Step 1.')
     parser.add_argument('--base', type=float, default=100000.0, help='Base capital for each symbol (default: 100,000)')
+    parser.add_argument('--all', action='store_true', help='Process all reports for trade extraction, even if excluded from portfolio.')
     args = parser.parse_args()
 
     output_dir = os.path.abspath(args.output_folder)
@@ -189,12 +190,20 @@ def main():
         return
 
     df_list = pd.read_csv(csv_path)
-    # Get all files to process regardless of inclusion
-    all_files_to_process = df_list['FilePath'].tolist()
+    
+    # Identify included files
     included_files_set = set(df_list[df_list['Include'] == 1]['FilePath'].tolist())
+    
+    # Determine which files to process for trade extraction
+    if args.all:
+        all_files_to_process = df_list['FilePath'].tolist()
+        print("Flag --all detected: Processing ALL reports for trade extraction.")
+    else:
+        all_files_to_process = df_list[df_list['Include'] == 1]['FilePath'].tolist()
+        print("Default mode: Processing only INCLUDED reports for trade extraction.")
 
     if not all_files_to_process:
-        print("No files found in report_list.csv.")
+        print("No files found to process.")
         return
 
     print(f"Processing {len(all_files_to_process)} reports for detailed trade data...")
@@ -208,8 +217,9 @@ def main():
         shutil.rmtree(trades_out_dir)
     os.makedirs(trades_out_dir, exist_ok=True)
 
-    for f in all_files_to_process:
-        print(f"Processing {os.path.basename(f)}...")
+    total_files = len(all_files_to_process)
+    for i, f in enumerate(all_files_to_process, 1):
+        print(f"[{i}/{total_files}] Processing {os.path.basename(f)}...")
         seqs, full_df = parse_sequences_and_deals(f)
         
         # Only add sequences to the portfolio pool if marked for inclusion

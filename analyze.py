@@ -1903,12 +1903,18 @@ def main():
                             ax_breach.axhline(max_trades_gap, color='blue', linestyle='--', linewidth=2, label=f'Pip Gap at Max Trades: {max_trades_gap:.1f}')
                             # Add text label for the line itself
                             ax_breach.text(x_breach[-1] + 0.5, max_trades_gap, f'  Max Sequence Gap: {max_trades_gap:.1f}', color='blue', va='center', fontweight='bold')
+                            
+                            # Add 3x Max Sequence Day Gap line
+                            max_trades_gap_3x = 3 * max_trades_gap
+                            ax_breach.axhline(max_trades_gap_3x, color='red', linestyle='--', linewidth=2, label=f'3x Max Sequence Day Gap: {max_trades_gap_3x:.1f}')
+                            ax_breach.text(x_breach[-1] + 0.5, max_trades_gap_3x, f'  3x Max Sequence Day Gap: {max_trades_gap_3x:.1f}', color='red', va='center', fontweight='bold')
+                            
                             ax_breach.legend(fontsize=8, loc='upper left')
                         
                         # Adjust y-axis to accommodate labels and line
-                        max_y = max(breach_gaps + ([max_trades_gap] if 'max_trades_gap' in locals() and max_trades_gap else [0]))
+                        max_y = max(breach_gaps + ([max_trades_gap] if 'max_trades_gap' in locals() and max_trades_gap else [0]) + ([max_trades_gap_3x] if 'max_trades_gap_3x' in locals() and max_trades_gap_3x else [0]))
                         if max_y > 0:
-                            ax_breach.set_ylim(0, max_y * 1.2)
+                            ax_breach.set_ylim(0, max_y * 1.35)
                     else:
                         ax_flat[8].set_axis_off()
                 

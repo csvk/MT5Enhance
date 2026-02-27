@@ -28,7 +28,8 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 ├── analysis/
 │   └── output_20231223_120000/        <-- Created in Step 1
 │       ├── report_list.csv
-│       ├── report_list.filtered.csv   <-- Created in Step 7
+│       ├── report_list_filter_1.csv   <-- Archived after filter.py run
+│       ├── report_list_filter_2.csv   <-- Subsequent filter.py runs
 │       ├── prices/                    <-- Created in Step 1 (FX Data)
 │       ├── Full_Analysis.html         <-- Created in Step 3
 │       ├── Short_Analysis.html        <-- Created in Step 3
@@ -141,17 +142,19 @@ python compare.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
     *   **Side-by-Side Comparison**: Displays PnL, Drawdown, Recovery Factor, and Trade Counts for each variant in a clean, comparative table.
 
 ### Step 7: Filter Analysis Report
-Select the top N most profitable files from an existing analysis and generate a focused report.
+Select the top N most profitable files from an existing analysis and perform an end-to-end test on the selection.
 ```bash
 python filter.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS" 10
 ```
 *   **Output**: 
     *   `Filtered Report.html`: A focused report containing only the top N contributors.
-    *   `report_list.filtered.csv`: A copy of the report list with only selected files marked for inclusion.
+    *   `report_list_filter_<N>.csv`: The filtered report list used for the run, archived with an incremental number. Includes a **Change** column (starting from run 2) that identifies new inclusions (1) or exclusions (0) compared to the previous run.
+    *   `report_list.csv`: Restored to the original full list of reports.
 *   **Key Features**:
-    *   **Automatic Selection**: Automatically identifies the most profitable strategies from the analysis.
-    *   **Manual Construction**: Builds a new report by extracting relevant data without needing to re-run the full analysis.
-    *   **Cleanup**: Omit portfolio-level charts to focus specifically on the selected top performers.
+    *   **Automatic Selection**: Identifies the most profitable strategies from the analysis.
+    *   **E2E Selection Test**: Automatically triggers `e2e.py` to regenerate the full analysis (charts, trades, etc.) for only the selected top performers.
+    *   **Run Tracking**: Archives each filtered run as a separate `report_list_filter_<N>.csv` file for history while restoring the original list for future operations.
+    *   **Cleanup**: Omit portfolio-level charts in the initial `Filtered Report.html` to focus on the selected top performers.
 
 ## Utility Scripts
 

@@ -4,6 +4,8 @@ import pandas as pd
 from bs4 import BeautifulSoup
 import re
 import webbrowser
+import shutil
+import subprocess
 
 def filter_report():
     parser = argparse.ArgumentParser(description='Filter analysis report by top N profitable files.')
@@ -20,9 +22,20 @@ def filter_report():
     if not os.path.exists(short_report_path):
         print(f"Error: Short_Analysis.html not found in {output_dir}")
         return
-    if not os.path.exists(report_list_path):
-        print(f"Error: report_list.csv not found in {output_dir}")
+    
+    # Rename report_list.csv to report_list_all.csv if it exists
+    report_list_all_path = os.path.join(output_dir, "report_list_all.csv")
+    if os.path.exists(report_list_path):
+        print(f"Renaming {report_list_path} to {report_list_all_path}...")
+        shutil.move(report_list_path, report_list_all_path)
+    
+    if not os.path.exists(report_list_all_path):
+        print(f"Error: report_list_all.csv (or {report_list_path}) not found in {output_dir}")
         return
+
+    # Use report_list_all.csv as input
+    report_list_path = report_list_all_path
+    filtered_csv_path = os.path.join(output_dir, "report_list.csv")
 
     print(f"Filtering top {args.n} files from {short_report_path}...")
 
@@ -367,6 +380,72 @@ def filter_report():
         webbrowser.open(clickable_link)
     except Exception as e:
         print(f"Could not automatically open browser: {e}")
+
+    # Execute e2e.py from the current output folder
+    print(f"\nExecuting e2e.py to update analysis for filtered reports...")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    e2e_script = os.path.join(script_dir, "e2e.py")
+    
+    try:
+        # e2e.py handles its own output_dir identification or accepts it as arg
+        # We pass output_dir so it uses the filtered report_list.csv
+        subprocess.run(["python", e2e_script, output_dir], check=True)
+        print("e2e.py execution completed successfully.")
+
+        # Archive the filtered report_list.csv and restore the original
+        import glob
+        run_files = glob.glob(os.path.join(output_dir, "report_list_filter_*.csv"))
+        n_values = []
+        for f in run_files:
+            match = re.search(r'report_list_filter_(\d+)\.csv', os.path.basename(f))
+            if match:
+                n_values.append(int(match.group(1)))
+        next_n = max(n_values) + 1 if n_values else 1
+        
+        # Load the current filtered list for archiving
+        df_current = pd.read_csv(filtered_csv_path)
+
+        if next_n > 1:
+            prev_run_path = os.path.join(output_dir, f"report_list_filter_{next_n-1}.csv")
+            if os.path.exists(prev_run_path):
+                print(f"Comparing current run with {os.path.basename(prev_run_path)}...")
+                df_prev = pd.read_csv(prev_run_path)
+                
+                # Merge current and previous to compare 'Include' status
+                # Ensure FilePath is the key for comparison
+                merged = df_current[['FilePath', 'Include']].merge(
+                    df_prev[['FilePath', 'Include']], on='FilePath', suffixes=('_curr', '_prev'), how='left'
+                )
+                
+                def determine_change(row):
+                    curr = row['Include_curr']
+                    prev = row['Include_prev']
+                    if pd.isna(prev): return "" # New file not present in previous run
+                    if curr == 1 and prev == 0: return 1 # Included
+                    if curr == 0 and prev == 1: return 0 # Excluded
+                    return "" # No change
+                
+                df_current['Change'] = merged.apply(determine_change, axis=1)
+
+        run_csv_path = os.path.join(output_dir, f"report_list_filter_{next_n}.csv")
+        print(f"Archiving filtered report list to {os.path.basename(run_csv_path)}...")
+        df_current.to_csv(run_csv_path, index=False)
+        
+        # Remove the temporary filtered_csv_path if it was used to create df_current
+        # Wait, filtered_csv_path is actually output_dir/report_list.csv (the filtered one used by e2e)
+        # We should keep it for the restore logic below, but we've already archived it.
+        # Actually, the original filter.py logic used shutil.move, I've changed it to df.to_csv.
+        # So I should delete the temporary report_list.csv before restoring the original.
+        if os.path.exists(filtered_csv_path):
+            os.remove(filtered_csv_path)
+
+        print(f"Restoring original report_list.csv from {os.path.basename(report_list_all_path)}...")
+        shutil.move(report_list_all_path, os.path.join(output_dir, "report_list.csv"))
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error: e2e.py failed with exit code {e.returncode}")
+    except Exception as e:
+        print(f"Error executing e2e.py: {e}")
 
 if __name__ == "__main__":
     filter_report()

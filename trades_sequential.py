@@ -6,8 +6,6 @@ from bs4 import BeautifulSoup
 import io
 import argparse
 from datetime import datetime
-import multiprocessing as mp
-import sys
 
 def parse_sequences_and_deals(file_path):
     try:
@@ -176,37 +174,6 @@ def parse_sequences_and_deals(file_path):
         print(f"Error parsing {os.path.basename(file_path)}: {e}")
         return [], []
 
-def process_single_report(f, included_files_set, trades_out_dir, base_capital=100000.0, idx=0, total=0):
-    """
-    Worker function to process a single report file.
-    """
-    if idx > 0 and total > 0:
-        print(f"<{idx} / {total}> [PID:{os.getpid()}] Processing: {os.path.basename(f)}")
-    try:
-        seqs, full_df = parse_sequences_and_deals(f)
-        
-        # Only return sequences if marked for inclusion
-        relevant_seqs = seqs if f in included_files_set else []
-        
-        # Save all trades from this file even if empty
-        filename_no_ext = os.path.splitext(os.path.basename(f))[0]
-        all_trades_csv = os.path.join(trades_out_dir, f"all_trades_{filename_no_ext}.csv")
-        
-        if full_df:
-            df_full = pd.DataFrame(full_df)
-            if 'SourceFile' in df_full.columns:
-                df_full.drop(columns=['SourceFile'], inplace=True)
-            df_full.to_csv(all_trades_csv, index=False)
-        else:
-            # Create an empty CSV with headers for consistency
-            cols = ['Time', 'Deal', 'Symbol', 'Type', 'Direction', 'Volume', 'Price', 'Order', 'Commission', 'Swap', 'Profit', 'Balance', 'Comment', 'SequenceNumber', 'TradeNumberInSequence']
-            pd.DataFrame(columns=cols).to_csv(all_trades_csv, index=False)
-            
-        return relevant_seqs
-    except Exception as e:
-        print(f"Error in process_single_report for {f}: {e}")
-        return []
-
 def main():
     parser = argparse.ArgumentParser(description='Extract Non-Overlapping Trades to CSV')
     parser.add_argument('output_folder', type=str, help='Path to the output folder (e.g., [Parent]/analysis/output_*) created in Step 1.')
@@ -239,7 +206,9 @@ def main():
         print("No files found to process.")
         return
 
-    print(f"Processing {len(all_files_to_process)} reports for detailed trade data using {mp.cpu_count()} CPUs...")
+    print(f"Processing {len(all_files_to_process)} reports for detailed trade data...")
+    
+    all_sequences = []
     
     # Refresh directory: Delete if exists, then recreate
     trades_out_dir = os.path.join(output_dir, "Trades")
@@ -248,21 +217,28 @@ def main():
         shutil.rmtree(trades_out_dir)
     os.makedirs(trades_out_dir, exist_ok=True)
 
-    # Use multiprocessing Pool to process files in parallel
     total_files = len(all_files_to_process)
-    pool_args = [(f, included_files_set, trades_out_dir, args.base, i, total_files) for i, f in enumerate(all_files_to_process, 1)]
-    
-    all_sequences = []
-    try:
-        with mp.Pool(processes=mp.cpu_count()) as pool:
-            results = pool.starmap(process_single_report, pool_args)
-            for seqs in results:
-                all_sequences.extend(seqs)
-    except KeyboardInterrupt:
-        print("\n[STOP] Execution interrupted by user. Terminating worker processes...")
-        # pool is already closed by 'with' statement in case of error if handled inside
-        # but here we need to ensure termination if it's still running
-        sys.exit(1)
+    for i, f in enumerate(all_files_to_process, 1):
+        print(f"[{i}/{total_files}] Processing {os.path.basename(f)}...")
+        seqs, full_df = parse_sequences_and_deals(f)
+        
+        # Only add sequences to the portfolio pool if marked for inclusion
+        if f in included_files_set:
+            all_sequences.extend(seqs)
+        
+        # Save all trades from this file even if empty
+        filename_no_ext = os.path.splitext(os.path.basename(f))[0]
+        all_trades_csv = os.path.join(trades_out_dir, f"all_trades_{filename_no_ext}.csv")
+        
+        if full_df:
+            df_full = pd.DataFrame(full_df)
+            if 'SourceFile' in df_full.columns:
+                df_full.drop(columns=['SourceFile'], inplace=True)
+            df_full.to_csv(all_trades_csv, index=False)
+        else:
+            # Create an empty CSV with headers for consistency
+            cols = ['Time', 'Deal', 'Symbol', 'Type', 'Direction', 'Volume', 'Price', 'Order', 'Commission', 'Swap', 'Profit', 'Balance', 'Comment', 'SequenceNumber', 'TradeNumberInSequence']
+            pd.DataFrame(columns=cols).to_csv(all_trades_csv, index=False)
             
     # Group by Symbol
     sequences_by_symbol = {}

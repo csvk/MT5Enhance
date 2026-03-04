@@ -87,10 +87,20 @@ def export_files():
                 name_base = os.path.splitext(name)[0]
                 ul = h3.find_next_sibling('ul', class_='metrics-list')
                 if ul:
-                    mt_li = ul.find(lambda tag: tag.name == 'li' and 'Max Trades in Sequence' in tag.get_text())
+                    # Support both "Max Trades" and "Max Trades in Sequence"
+                    mt_li = ul.find(lambda tag: tag.name == 'li' and ('Max Trades in Sequence' in tag.get_text() or 'Max Trades' in tag.get_text()))
                     if mt_li:
+                        # Extract the numeric value more robustly
+                        # Original line: <li><strong>Max Trades in Sequence</strong>: 10 [2025.10.15]</li>
+                        # Or: <li><strong>Max Trades</strong>: 10 G:50.0</li>
                         val_text = mt_li.get_text().split(':')[-1].strip()
-                        val = val_text.split('[')[0].strip()
+                        # Extract the first integer found in the value text
+                        mt_match = re.search(r'(\d+)', val_text)
+                        if mt_match:
+                            val = mt_match.group(1)
+                        else:
+                            val = val_text.split('[')[0].strip().split(' ')[0].strip()
+                        
                         max_trades_map[name_base] = val
 
     rows = table.find_all('tr')[1:] # Skip header row
